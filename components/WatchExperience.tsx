@@ -27,14 +27,32 @@ function formatDuration(s: number): string | null {
   return `${sec}s`;
 }
 
+// Cap the per-session payload cache so a very long course can't grow it without
+// bound. Courses are typically well under this; eviction is FIFO and never
+// touches the lesson currently on screen.
+const MAX_CACHE = 60;
+
 export default function WatchExperience({ initial }: { initial: WatchData }) {
   const [data, setData] = useState<WatchData>(initial);
   const [pending, setPending] = useState(false);
+  // The lesson the user just clicked, surfaced as "active" in the rail the
+  // instant they click — even on a cache miss, before the payload lands — so a
+  // click never feels unregistered.
+  const [optimisticId, setOptimisticId] = useState<string | null>(null);
   const dataRef = useRef(data);
   dataRef.current = data;
   // Blocks overlapping in-place navigations (e.g. a fast double-tap on Next)
   // from racing each other.
   const navLockRef = useRef(false);
+
+  // Session-scoped payload memoization. Every lesson in a course shares the same
+  // tree/progress and students revisit lessons, so caching the payload makes
+  // repeat and prefetched navigations instant (zero network). `inflight` dedupes
+  // concurrent fetches/prefetches for the same lesson.
+  const cacheRef = useRef<Map<string, WatchData>>(
+    new Map([[initial.current.videoId, initial]]),
+  );
+  const inflightRef = useRef<Map<string, Promise<WatchData | null>>>(new Map());
 
   // Sync only on a genuine navigation to a *different* lesson (initial load, or
   // a real server navigation back into this route). If the server re-renders
@@ -43,52 +61,116 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
   // the player and re-seek mid-playback. This guards in-place playback against
   // any stray route refresh.
   useEffect(() => {
+    cacheRef.current.set(initial.current.videoId, initial);
     setData((prev) =>
       prev.current.videoId === initial.current.videoId ? prev : initial,
     );
   }, [initial]);
 
-  // Core in-place swap. Loads the payload via a plain route handler (NOT a
-  // Server Action) so there is zero App Router churn — the lesson swaps as a
-  // pure client DOM update, never a full page reload. `push` controls whether a
-  // new history entry is created (false for back/forward, which already moved).
-  const swap = useCallback(async (targetId: string, push: boolean) => {
-    if (!targetId || targetId === dataRef.current.current.videoId) return;
-    if (navLockRef.current) return;
-    navLockRef.current = true;
-    setPending(true);
-    try {
-      const res = await fetch(`/api/watch/${encodeURIComponent(targetId)}`, {
-        cache: "no-store",
-        headers: { accept: "application/json" },
-      });
-      if (res.ok) {
-        const payload = (await res.json()) as WatchData;
-        setData(payload);
-        if (push) {
-          window.history.pushState(
-            { videoId: targetId },
-            "",
-            `/videos/${targetId}`,
-          );
+  // Fetch (and memoize) a lesson payload, deduping concurrent requests. Returns
+  // null on access-loss / network failure so callers can fall back to a real
+  // navigation. Never throws.
+  const fetchPayload = useCallback(
+    async (videoId: string): Promise<WatchData | null> => {
+      const cached = cacheRef.current.get(videoId);
+      if (cached) return cached;
+      const existing = inflightRef.current.get(videoId);
+      if (existing) return existing;
+
+      const p = (async (): Promise<WatchData | null> => {
+        try {
+          const res = await fetch(`/api/watch/${encodeURIComponent(videoId)}`, {
+            cache: "no-store",
+            headers: { accept: "application/json" },
+          });
+          if (!res.ok) return null;
+          const payload = (await res.json()) as WatchData;
+          const cache = cacheRef.current;
+          cache.set(videoId, payload);
+          // FIFO eviction, but never drop the lesson currently on screen.
+          while (cache.size > MAX_CACHE) {
+            const oldest = cache.keys().next().value;
+            if (oldest === undefined || oldest === dataRef.current.current.videoId) break;
+            cache.delete(oldest);
+          }
+          return payload;
+        } catch {
+          return null;
+        } finally {
+          inflightRef.current.delete(videoId);
         }
-        // Bring the player into view if the click came from far down the rail.
-        if (typeof window !== "undefined" && window.scrollY > 200) {
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }
-      } else {
-        // Access lost or video gone — hand off to a real navigation so the
-        // server can 403 / 404 / redirect authoritatively.
-        window.location.assign(`/videos/${targetId}`);
+      })();
+      inflightRef.current.set(videoId, p);
+      return p;
+    },
+    [],
+  );
+
+  // Predictive prefetch — warm a lesson's payload into cache before it's needed
+  // (hover/focus on the rail, or the adjacent next/prev). Fire-and-forget; the
+  // cache + inflight guards make repeat calls free.
+  const prefetch = useCallback(
+    (videoId?: string | null) => {
+      if (!videoId) return;
+      if (cacheRef.current.has(videoId) || inflightRef.current.has(videoId)) return;
+      void fetchPayload(videoId);
+    },
+    [fetchPayload],
+  );
+
+  const applyPayload = useCallback(
+    (payload: WatchData, targetId: string, push: boolean) => {
+      setData(payload);
+      setOptimisticId(null);
+      if (push) {
+        window.history.pushState({ videoId: targetId }, "", `/videos/${targetId}`);
       }
-    } catch {
-      // Network blip — fall back to a real navigation rather than dead-ending.
-      window.location.assign(`/videos/${targetId}`);
-    } finally {
-      navLockRef.current = false;
-      setPending(false);
-    }
-  }, []);
+      // Bring the player into view if the click came from far down the rail.
+      if (typeof window !== "undefined" && window.scrollY > 200) {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    },
+    [],
+  );
+
+  // Core in-place swap. On a cache hit it swaps synchronously (instant, no
+  // spinner); on a miss it shows the optimistic rail highlight immediately and
+  // loads the payload via a plain route handler (NOT a Server Action) so there
+  // is zero App Router churn — never a full page reload. `push` controls whether
+  // a new history entry is created (false for back/forward, which already moved).
+  const swap = useCallback(
+    async (targetId: string, push: boolean) => {
+      if (!targetId || targetId === dataRef.current.current.videoId) return;
+      if (navLockRef.current) return;
+      navLockRef.current = true;
+
+      // Instant path — payload already cached (revisit or prefetched).
+      const cached = cacheRef.current.get(targetId);
+      if (cached) {
+        applyPayload(cached, targetId, push);
+        navLockRef.current = false;
+        return;
+      }
+
+      // Cache miss — register the click visually, then load.
+      setOptimisticId(targetId);
+      setPending(true);
+      try {
+        const payload = await fetchPayload(targetId);
+        if (payload) {
+          applyPayload(payload, targetId, push);
+        } else {
+          // Access lost or video gone — hand off to a real navigation so the
+          // server can 403 / 404 / redirect authoritatively.
+          window.location.assign(`/videos/${targetId}`);
+        }
+      } finally {
+        navLockRef.current = false;
+        setPending(false);
+      }
+    },
+    [applyPayload, fetchPayload],
+  );
 
   // Rail / prev-next clicks: swap in place and push a tagged history entry.
   const navigate = useCallback(
@@ -97,6 +179,13 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
     },
     [swap],
   );
+
+  // Warm the adjacent lessons as soon as a video becomes current — "next" is the
+  // single most likely click, and prev covers back-tracking.
+  useEffect(() => {
+    prefetch(data.current.nextId);
+    prefetch(data.current.prevId);
+  }, [data.current.videoId, data.current.nextId, data.current.prevId, prefetch]);
 
   // Browser back/forward: read the lesson id from the popped entry (or the URL)
   // and swap in place, so history navigation stays a clean DOM update too.
@@ -122,6 +211,9 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
     data.progress.map((p) => [p.videoId, { lastTimestamp: p.lastTimestamp, completed: p.completed }]),
   );
   const totalLessons = current.totalLessons;
+  // While a cache-miss load is in flight, show the just-clicked lesson as the
+  // active one so the rail reacts to the click instantly.
+  const activeId = optimisticId ?? current.videoId;
 
   return (
     <main className="sx-watch" id="main-content" aria-busy={pending}>
@@ -237,9 +329,10 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
                     key={l.id}
                     lesson={l}
                     index={i}
-                    isCurrent={l.id === current.videoId}
+                    isCurrent={l.id === activeId}
                     progress={progressMap.get(l.id) ?? null}
                     onNavigate={navigate}
+                    onPrefetch={prefetch}
                   />
                 ))}
               </ol>
@@ -283,9 +376,10 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
                             key={l.id}
                             lesson={l}
                             index={li}
-                            isCurrent={l.id === current.videoId}
+                            isCurrent={l.id === activeId}
                             progress={progressMap.get(l.id) ?? null}
                             onNavigate={navigate}
+                            onPrefetch={prefetch}
                           />
                         ))}
                       </ol>
@@ -307,12 +401,14 @@ function TreeLesson({
   isCurrent,
   progress,
   onNavigate,
+  onPrefetch,
 }: {
   lesson: LessonNode;
   index: number;
   isCurrent: boolean;
   progress: { lastTimestamp: number; completed: boolean } | null;
   onNavigate: (id: string) => void;
+  onPrefetch: (id: string) => void;
 }) {
   const completed = progress?.completed === true;
   const ratio = completed
@@ -329,6 +425,9 @@ function TreeLesson({
         href={`/videos/${lesson.id}`}
         className="sx-rail-row"
         aria-current={isCurrent ? "true" : undefined}
+        // Warm the payload on intent (hover/focus) so the click is instant.
+        onMouseEnter={() => onPrefetch(lesson.id)}
+        onFocus={() => onPrefetch(lesson.id)}
         onClick={(e) => {
           // Let modified clicks (new tab) behave natively.
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
