@@ -41,6 +41,17 @@ const nextConfig = {
       bodySizeLimit: "2mb",
     },
     optimizePackageImports: ["lucide-react"],
+    // Client-side Router Cache lifetimes. Next 15 defaults `dynamic` to 0, which
+    // makes every back/sidebar navigation to a dynamic page (e.g. the
+    // analytics-heavy /admin home) refetch and re-run its loading skeleton. With
+    // a non-zero window, an already-visited or prefetched page is reused from
+    // the client cache — instant return, no skeleton flash — while still being
+    // revalidated in the background. Mutations that call revalidatePath/Tag
+    // still bust the cache, so this never serves data stale past a write.
+    staleTimes: {
+      dynamic: 180,
+      static: 300,
+    },
   },
   images: {
     formats: ["image/avif", "image/webp"],

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -15,7 +15,6 @@ import {
   PlayCircle,
 } from "lucide-react";
 import VideoPlayer from "@/components/VideoPlayer";
-import { loadWatchPayload } from "@/actions/watch";
 import type { WatchData, LessonNode, WatchNote } from "@/lib/watch";
 
 function formatDuration(s: number): string | null {
@@ -30,16 +29,16 @@ function formatDuration(s: number): string | null {
 
 export default function WatchExperience({ initial }: { initial: WatchData }) {
   const [data, setData] = useState<WatchData>(initial);
-  const [pending, startTransition] = useTransition();
+  const [pending, setPending] = useState(false);
   const dataRef = useRef(data);
   dataRef.current = data;
   // Blocks overlapping in-place navigations (e.g. a fast double-tap on Next)
-  // from racing each other; the closure below can't read `pending` directly.
+  // from racing each other.
   const navLockRef = useRef(false);
 
-  // Sync only on a genuine navigation to a *different* lesson (initial load,
-  // browser back/forward). If the server re-renders this same route for any
-  // other reason and hands back a fresh `initial` for the lesson already on
+  // Sync only on a genuine navigation to a *different* lesson (initial load, or
+  // a real server navigation back into this route). If the server re-renders
+  // this same route and hands back a fresh `initial` for the lesson already on
   // screen, we keep our live client state untouched — swapping it would reset
   // the player and re-seek mid-playback. This guards in-place playback against
   // any stray route refresh.
@@ -49,32 +48,74 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
     );
   }, [initial]);
 
-  const navigate = useCallback((targetId: string, push = true) => {
+  // Core in-place swap. Loads the payload via a plain route handler (NOT a
+  // Server Action) so there is zero App Router churn — the lesson swaps as a
+  // pure client DOM update, never a full page reload. `push` controls whether a
+  // new history entry is created (false for back/forward, which already moved).
+  const swap = useCallback(async (targetId: string, push: boolean) => {
     if (!targetId || targetId === dataRef.current.current.videoId) return;
     if (navLockRef.current) return;
     navLockRef.current = true;
-    startTransition(async () => {
-      try {
-        const r = await loadWatchPayload(targetId);
-        if (r.ok) {
-          setData(r.data);
-          if (push) {
-            window.history.pushState(null, "", `/videos/${targetId}`);
-          }
-          // Bring the player into view if the click came from far down the rail.
-          if (typeof window !== "undefined" && window.scrollY > 200) {
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          }
-        } else {
-          // Access lost or video gone — fall back to a real navigation so the
-          // server can redirect / 404 authoritatively.
-          window.location.assign(`/videos/${targetId}`);
+    setPending(true);
+    try {
+      const res = await fetch(`/api/watch/${encodeURIComponent(targetId)}`, {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        const payload = (await res.json()) as WatchData;
+        setData(payload);
+        if (push) {
+          window.history.pushState(
+            { videoId: targetId },
+            "",
+            `/videos/${targetId}`,
+          );
         }
-      } finally {
-        navLockRef.current = false;
+        // Bring the player into view if the click came from far down the rail.
+        if (typeof window !== "undefined" && window.scrollY > 200) {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      } else {
+        // Access lost or video gone — hand off to a real navigation so the
+        // server can 403 / 404 / redirect authoritatively.
+        window.location.assign(`/videos/${targetId}`);
       }
-    });
+    } catch {
+      // Network blip — fall back to a real navigation rather than dead-ending.
+      window.location.assign(`/videos/${targetId}`);
+    } finally {
+      navLockRef.current = false;
+      setPending(false);
+    }
   }, []);
+
+  // Rail / prev-next clicks: swap in place and push a tagged history entry.
+  const navigate = useCallback(
+    (targetId: string) => {
+      void swap(targetId, true);
+    },
+    [swap],
+  );
+
+  // Browser back/forward: read the lesson id from the popped entry (or the URL)
+  // and swap in place, so history navigation stays a clean DOM update too.
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const stateId =
+        e.state && typeof e.state === "object" && "videoId" in e.state
+          ? String((e.state as { videoId?: unknown }).videoId ?? "")
+          : "";
+      const m = window.location.pathname.match(/^\/videos\/([^/]+)\/?$/);
+      const target = stateId || (m ? decodeURIComponent(m[1]!) : "");
+      // Only handle in-route lesson swaps; let the router own anything else.
+      if (target && target !== dataRef.current.current.videoId) {
+        void swap(target, false);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [swap]);
 
   const { course, tree, current } = data;
   const progressMap = new Map(

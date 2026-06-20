@@ -1,8 +1,8 @@
 /**
  * Shared builder for the student "watch" experience. Used by both the
- * server-rendered page (initial load) and the `loadWatchPayload` server action
- * (in-place video switching). Centralizing it keeps the SSR payload and the
- * swap payload byte-for-byte identical, so navigating between lessons never
+ * server-rendered page (initial load) and the `GET /api/watch/[videoId]` route
+ * handler (in-place video switching). Centralizing it keeps the SSR payload and
+ * the swap payload byte-for-byte identical, so navigating between lessons never
  * shifts the layout.
  *
  * Callers MUST authorize first (requireVideoAccess) — this module only reads.
