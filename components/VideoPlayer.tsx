@@ -123,6 +123,9 @@ export default function VideoPlayer({
   const [buffering, setBuffering] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const cancelRef = useRef(false);
+  // Debounces the spinner on mid-playback stalls so brief `waiting` blips don't
+  // flash a loader over a video that's actually playing.
+  const stallTimerRef = useRef<number | undefined>(undefined);
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -259,9 +262,11 @@ export default function VideoPlayer({
 
   // -- Buffering / error overlay (streaming only) --------------------------
   // A bare <video> renders only a black rectangle while it connects to the
-  // proxy and buffers, which reads as "my click did nothing." Drive a real
-  // spinner off the element's own readiness events so a lesson swap always
-  // shows it is loading, and surface a retry on hard failures (e.g. proxy 503).
+  // proxy and buffers, so a lesson swap reads as a dead click. Drive a spinner
+  // off the element's readiness events. Two rules kill the "playing but still
+  // loading" glitch: (1) any real progress (`timeupdate`/`playing`/`canplay`)
+  // hides it instantly; (2) a stall only shows the spinner if it lasts ~350ms,
+  // so a momentary re-buffer that resolves on the next frame never flashes.
   useEffect(() => {
     if (!streaming) {
       setBuffering(false);
@@ -270,31 +275,50 @@ export default function VideoPlayer({
     const v = videoRef.current;
     if (!v) return;
     setLoadError(false);
-    const ready = () => setBuffering(false);
-    const wait = () => setBuffering(true);
+
+    const clearStall = () => {
+      if (stallTimerRef.current) {
+        window.clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = undefined;
+      }
+    };
+    const ready = () => {
+      clearStall();
+      setBuffering(false);
+    };
+    const stall = () => {
+      clearStall();
+      stallTimerRef.current = window.setTimeout(() => setBuffering(true), 350);
+    };
     const fail = () => {
+      clearStall();
       setLoadError(true);
       setBuffering(false);
     };
+
     v.addEventListener("loadeddata", ready);
     v.addEventListener("canplay", ready);
+    v.addEventListener("canplaythrough", ready);
     v.addEventListener("playing", ready);
+    v.addEventListener("timeupdate", ready);
     v.addEventListener("seeked", ready);
-    v.addEventListener("waiting", wait);
-    v.addEventListener("seeking", wait);
-    v.addEventListener("stalled", wait);
+    v.addEventListener("waiting", stall);
+    v.addEventListener("seeking", stall);
     v.addEventListener("error", fail);
-    // The element may already have buffered enough by the time we attach
-    // (fast reconnect / cached range) — reconcile instead of flashing a spinner.
+    // On (re)mount show the spinner immediately only if not yet playable — the
+    // expected case on a fresh load. If it's already buffered, stay clean.
     setBuffering(v.readyState < 3 /* HAVE_FUTURE_DATA */);
+
     return () => {
+      clearStall();
       v.removeEventListener("loadeddata", ready);
       v.removeEventListener("canplay", ready);
+      v.removeEventListener("canplaythrough", ready);
       v.removeEventListener("playing", ready);
+      v.removeEventListener("timeupdate", ready);
       v.removeEventListener("seeked", ready);
-      v.removeEventListener("waiting", wait);
-      v.removeEventListener("seeking", wait);
-      v.removeEventListener("stalled", wait);
+      v.removeEventListener("waiting", stall);
+      v.removeEventListener("seeking", stall);
       v.removeEventListener("error", fail);
     };
   }, [videoId, streaming]);
@@ -400,6 +424,12 @@ export default function VideoPlayer({
     };
   }, [videoId, streaming, hasPrev, hasNext]);
 
+  // Effective chrome visibility. Folding `buffering`/`loadError` in here (rather
+  // than mounting/unmounting the controls) means the edge + center clusters fade
+  // via CSS instead of popping in and out — no glitchy flicker on load, and the
+  // controls never overlap the spinner.
+  const chromeShown = chromeVisible && !buffering && !loadError;
+
   const overlayNav = (
     <>
       {hasPrev ? (
@@ -430,14 +460,14 @@ export default function VideoPlayer({
   // Netflix-style center cluster: 10s rewind, big play/pause, 10s forward.
   // Streaming only — the Drive iframe has its own controls we can't drive.
   const centerControls = (
-    <div className="sx-ctls" aria-hidden={!chromeVisible}>
+    <div className="sx-ctls" aria-hidden={!chromeShown}>
       <button
         type="button"
         className="sx-ctl sx-ctl--skip"
         onClick={() => skip(-SKIP_SECONDS)}
         aria-label={`Rewind ${SKIP_SECONDS} seconds`}
         title={`Rewind ${SKIP_SECONDS}s`}
-        tabIndex={chromeVisible ? 0 : -1}
+        tabIndex={chromeShown ? 0 : -1}
       >
         <RotateCcw size={26} strokeWidth={2.2} aria-hidden="true" />
         <span className="sx-ctl-sec">{SKIP_SECONDS}</span>
@@ -448,7 +478,7 @@ export default function VideoPlayer({
         onClick={togglePlay}
         aria-label={playing ? "Pause" : "Play"}
         title={playing ? "Pause" : "Play"}
-        tabIndex={chromeVisible ? 0 : -1}
+        tabIndex={chromeShown ? 0 : -1}
       >
         {playing ? (
           <Pause size={30} strokeWidth={2.2} fill="currentColor" aria-hidden="true" />
@@ -462,7 +492,7 @@ export default function VideoPlayer({
         onClick={() => skip(SKIP_SECONDS)}
         aria-label={`Forward ${SKIP_SECONDS} seconds`}
         title={`Forward ${SKIP_SECONDS}s`}
-        tabIndex={chromeVisible ? 0 : -1}
+        tabIndex={chromeShown ? 0 : -1}
       >
         <RotateCw size={26} strokeWidth={2.2} aria-hidden="true" />
         <span className="sx-ctl-sec">{SKIP_SECONDS}</span>
@@ -507,7 +537,7 @@ export default function VideoPlayer({
         ref={frameRef}
         className="sx-player"
         data-has-edges={hasPrev || hasNext ? "true" : undefined}
-        data-chrome-visible={chromeVisible ? "true" : "false"}
+        data-chrome-visible={chromeShown ? "true" : "false"}
       >
         <video
           ref={videoRef}
@@ -531,7 +561,9 @@ export default function VideoPlayer({
             </button>
           </div>
         ) : null}
-        {countdown === null && !buffering && !loadError ? centerControls : null}
+        {/* Mounted whenever there's no error/up-next overlay; CSS fades it via
+            data-chrome-visible so it never pops in/out or overlaps the spinner. */}
+        {countdown === null && !loadError ? centerControls : null}
         {overlayNav}
         {nextOverlay}
       </div>
@@ -543,7 +575,7 @@ export default function VideoPlayer({
       ref={frameRef}
       className="sx-player"
       data-has-edges={hasPrev || hasNext ? "true" : undefined}
-      data-chrome-visible={chromeVisible ? "true" : "false"}
+      data-chrome-visible={chromeShown ? "true" : "false"}
     >
       <iframe
         src={src}

@@ -44,6 +44,9 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
   // Blocks overlapping in-place navigations (e.g. a fast double-tap on Next)
   // from racing each other.
   const navLockRef = useRef(false);
+  // The left column (player + info). We scroll this to the top on navigation so
+  // the video is in view after a tap from far down the lesson rail.
+  const mainRef = useRef<HTMLDivElement | null>(null);
 
   // Session-scoped payload memoization. Every lesson in a course shares the same
   // tree/progress and students revisit lessons, so caching the payload makes
@@ -125,9 +128,20 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
       if (push) {
         window.history.pushState({ videoId: targetId }, "", `/videos/${targetId}`);
       }
-      // Bring the player into view if the click came from far down the rail.
-      if (typeof window !== "undefined" && window.scrollY > 200) {
-        window.scrollTo({ top: 0, behavior: "smooth" });
+      // Bring the player up to just under the sticky topbar. On mobile the
+      // lesson list sits below the player and can be very long, so a tap far
+      // down the rail must scroll back to the video (Udemy-style). On desktop
+      // the player is already in view, so this is usually a no-op.
+      if (typeof window !== "undefined") {
+        const el = mainRef.current;
+        if (el) {
+          const TOPBAR_OFFSET = 72;
+          const top = Math.max(0, el.getBoundingClientRect().top + window.scrollY - TOPBAR_OFFSET);
+          if (Math.abs(window.scrollY - top) > 8) {
+            const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+            window.scrollTo({ top, behavior: reduce ? "auto" : "smooth" });
+          }
+        }
       }
     },
     [],
@@ -226,7 +240,7 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
       </Link>
 
       <div className="sx-watch-grid" data-pending={pending ? "true" : undefined}>
-        <div className="sx-watch-main">
+        <div className="sx-watch-main" ref={mainRef}>
           {current.embed ? (
             <VideoPlayer
               key={current.videoId}
