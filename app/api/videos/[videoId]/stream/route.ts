@@ -108,7 +108,14 @@ export async function GET(
     if (v) out.set(k, v);
   }
   if (!out.has("accept-ranges")) out.set("accept-ranges", "bytes");
-  out.set("cache-control", "private, no-store");
+  // Allow the student's OWN browser to cache these bytes (never a shared/CDN
+  // cache). This makes predictive prefetch of the next lesson actually instant
+  // and makes seeking/replays cheap, without weakening access control: every
+  // request is still auth-gated, and `private` keeps the cache per-browser. The
+  // forwarded ETag/Last-Modified let the browser revalidate after the window.
+  // Consistent with the project's honest-security model (no download button,
+  // no driveFileId exposure — content the student can already watch).
+  out.set("cache-control", "private, max-age=3600");
   out.set("content-disposition", "inline");
 
   return new NextResponse(upstream.body, {

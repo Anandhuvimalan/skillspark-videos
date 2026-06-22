@@ -541,6 +541,11 @@
   text-decoration: none;
 }
 
+/* The left/mobile Home replaces the logo on small screens; hidden on desktop. */
+.sx-home--mobile {
+  display: none;
+}
+
 /* ==========================================================================
    PAGE-LOAD REVEAL  (one orchestrated moment, then everything is still)
    ========================================================================== */
@@ -2696,6 +2701,17 @@ a.sx-resume:hover .sx-resume-play {
 
 @media (max-width: 640px) {
   .sx-brand-text span {
+    display: none;
+  }
+  /* Mobile: drop the logo and show Home in its place on the left; the
+     right-side Home is hidden so there's exactly one. */
+  .sx-brand {
+    display: none;
+  }
+  .sx-home--mobile {
+    display: inline-flex;
+  }
+  .sx-home--desktop {
     display: none;
   }
   .sx-grid {

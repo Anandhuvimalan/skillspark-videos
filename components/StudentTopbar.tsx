@@ -23,8 +23,17 @@ export default function StudentTopbar({ accessUntil }: Props) {
               <span>Recorded videos</span>
             </span>
           </Link>
+          {/* On mobile the logo is dropped and this takes its place on the left,
+              so students always have a clear way back to the dashboard. */}
+          <Link
+            href="/dashboard"
+            className="sx-btn sx-btn--ghost sx-home sx-home--mobile"
+          >
+            <Home size={16} aria-hidden="true" />
+            Home
+          </Link>
           <div className="sx-topbar-right">
-            <Link href="/dashboard" className="sx-btn sx-btn--ghost sx-home">
+            <Link href="/dashboard" className="sx-btn sx-btn--ghost sx-home sx-home--desktop">
               <Home size={15} aria-hidden="true" />
               Home
             </Link>

@@ -121,6 +121,29 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
     [fetchPayload],
   );
 
+  // Warm the actual VIDEO BYTES of the likely-next lesson into the browser's
+  // (private) HTTP cache while the current one plays, so opening it later starts
+  // almost instantly — the industrial "preload the next item" pattern. Bounded
+  // to the first few MB (enough to begin playback; the rest streams on demand),
+  // deduped per URL, and streaming-only. Relies on the proxy being privately
+  // cacheable.
+  const mediaWarmedRef = useRef<Set<string>>(new Set());
+  const warmMedia = useCallback((url?: string | null, streaming?: boolean) => {
+    if (!url || !streaming) return;
+    if (mediaWarmedRef.current.has(url)) return;
+    mediaWarmedRef.current.add(url);
+    try {
+      void fetch(url, { headers: { Range: "bytes=0-3145727" } /* first ~3 MB */ })
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .catch(() => {
+          // Failed warm-up shouldn't poison the cache key — allow a later retry.
+          mediaWarmedRef.current.delete(url);
+        });
+    } catch {
+      mediaWarmedRef.current.delete(url);
+    }
+  }, []);
+
   const applyPayload = useCallback(
     (payload: WatchData, targetId: string, push: boolean) => {
       setData(payload);
@@ -194,12 +217,31 @@ export default function WatchExperience({ initial }: { initial: WatchData }) {
     [swap],
   );
 
-  // Warm the adjacent lessons as soon as a video becomes current — "next" is the
-  // single most likely click, and prev covers back-tracking.
+  // Warm the adjacent lessons' PAYLOADS as soon as a video becomes current —
+  // "next" is the single most likely click, and prev covers back-tracking.
   useEffect(() => {
     prefetch(data.current.nextId);
     prefetch(data.current.prevId);
   }, [data.current.videoId, data.current.nextId, data.current.prevId, prefetch]);
+
+  // Then, once the current video has had a head start (so the warm-up never
+  // competes with its own initial buffering), preload the next lesson's VIDEO
+  // BYTES. We read the next payload (already prefetched above) to get its stream
+  // URL, then warm its first chunk into cache.
+  useEffect(() => {
+    const nextId = data.current.nextId;
+    if (!nextId) return;
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      const payload = await fetchPayload(nextId);
+      if (cancelled || !payload) return;
+      warmMedia(payload.current.embed?.url, payload.current.embed?.streaming);
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [data.current.videoId, data.current.nextId, fetchPayload, warmMedia]);
 
   // Browser back/forward: read the lesson id from the popped entry (or the URL)
   // and swap in place, so history navigation stays a clean DOM update too.
