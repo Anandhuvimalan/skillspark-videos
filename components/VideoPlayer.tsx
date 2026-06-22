@@ -229,17 +229,24 @@ export default function VideoPlayer({
     const v = videoRef.current;
     if (!v) return;
     setLoadError(false);
-    let tried = false;
+    // Start playback as early as correctly possible. `loadedmetadata` is the
+    // first point at which the resume-seek (run by the progress effect on the
+    // same event, attached earlier so it fires first) has set currentTime, so we
+    // play from the right spot without waiting for the later `canplay`. play()
+    // resolves once playback actually begins, so calling it before data is fully
+    // buffered just means "play the moment you can." Repeated calls are no-ops.
     const tryPlay = () => {
-      if (tried) return;
-      tried = true;
       void v.play().catch(() => {});
     };
     const onError = () => setLoadError(true);
+    v.addEventListener("loadedmetadata", tryPlay);
+    v.addEventListener("loadeddata", tryPlay);
     v.addEventListener("canplay", tryPlay);
     v.addEventListener("error", onError);
-    if (v.readyState >= 3 /* HAVE_FUTURE_DATA */) tryPlay();
+    if (v.readyState >= 1 /* HAVE_METADATA */) tryPlay();
     return () => {
+      v.removeEventListener("loadedmetadata", tryPlay);
+      v.removeEventListener("loadeddata", tryPlay);
       v.removeEventListener("canplay", tryPlay);
       v.removeEventListener("error", onError);
     };
@@ -298,6 +305,7 @@ export default function VideoPlayer({
           controlsList="nodownload"
           disablePictureInPicture
           preload="auto"
+          autoPlay
           playsInline
         />
         {loadError ? (
