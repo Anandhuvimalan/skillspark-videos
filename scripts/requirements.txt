@@ -1,0 +1,6 @@
+# Deps for scripts/import_students_from_drive.py
+#   pip install -r scripts/requirements.txt
+requests
+pyjwt
+cryptography
+psycopg2-binary

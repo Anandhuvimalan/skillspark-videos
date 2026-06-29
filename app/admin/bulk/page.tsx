@@ -8,6 +8,7 @@ import {
 } from "@/actions/bulk";
 import MultiCheckPicker from "@/components/MultiCheckPicker";
 import Dropdown from "@/components/Dropdown";
+import ActionForm from "@/components/ActionForm";
 import { getActiveBatches, getActiveCourses } from "@/lib/catalog-cache";
 
 function isoDate(d: Date) {
@@ -55,11 +56,12 @@ export default async function BulkPage() {
             ]}
             example="Alice,alice@example.com"
           />
-          <form
+          <ActionForm
+            successMessage="Students added to batch."
+            resetOnSuccess
             action={async (fd: FormData) => {
               "use server";
-              const r = await bulkAddStudentsToBatch(fd);
-              if (!r.ok) throw new Error(r.error);
+              return bulkAddStudentsToBatch(fd);
             }}
           >
             <div className="form-grid">
@@ -94,7 +96,7 @@ export default async function BulkPage() {
             <div className="form-actions">
               <button type="submit">Add students to batch</button>
             </div>
-          </form>
+          </ActionForm>
         </div>
       </div>
 
@@ -115,11 +117,12 @@ export default async function BulkPage() {
             ]}
             example="S001,Alice,alice@example.com,ONLB101,Excel+SQL"
           />
-          <form
+          <ActionForm
+            successMessage="Students created."
+            resetOnSuccess
             action={async (fd: FormData) => {
               "use server";
-              const r = await bulkAddStudentsFromForm(fd);
-              if (!r.ok) throw new Error(r.error);
+              return bulkAddStudentsFromForm(fd);
             }}
           >
             <div className="form-field-group" style={{ marginBottom: "20px" }}>
@@ -162,7 +165,7 @@ export default async function BulkPage() {
             <div className="form-actions">
               <button type="submit">Create students</button>
             </div>
-          </form>
+          </ActionForm>
         </div>
       </div>
 
@@ -181,11 +184,12 @@ export default async function BulkPage() {
             ]}
             example="ONLB201,Online Batch 201,Spring intake,Excel+SQL"
           />
-          <form
+          <ActionForm
+            successMessage="Batches created."
+            resetOnSuccess
             action={async (fd: FormData) => {
               "use server";
-              const r = await bulkAddBatchesFromForm(fd);
-              if (!r.ok) throw new Error(r.error);
+              return bulkAddBatchesFromForm(fd);
             }}
           >
             <div className="form-field-group" style={{ marginBottom: "20px" }}>
@@ -217,7 +221,7 @@ export default async function BulkPage() {
             <div className="form-actions">
               <button type="submit">Create batches</button>
             </div>
-          </form>
+          </ActionForm>
         </div>
       </div>
 
@@ -236,11 +240,12 @@ export default async function BulkPage() {
             ]}
             example="Tally,Tally accounting basics,active"
           />
-          <form
+          <ActionForm
+            successMessage="Courses created."
+            resetOnSuccess
             action={async (fd: FormData) => {
               "use server";
-              const r = await bulkAddCoursesFromForm(fd);
-              if (!r.ok) throw new Error(r.error);
+              return bulkAddCoursesFromForm(fd);
             }}
           >
             <div className="form-field-group" style={{ marginBottom: "20px" }}>
@@ -262,7 +267,7 @@ export default async function BulkPage() {
             <div className="form-actions">
               <button type="submit">Create courses</button>
             </div>
-          </form>
+          </ActionForm>
         </div>
       </div>
     </div>

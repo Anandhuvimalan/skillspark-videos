@@ -9961,3 +9961,51 @@ textarea {
 @media (max-width: 700px) {
   .student-id-stack small { max-width: 150px; }
 }
+
+/* ==========================================================================
+   ADMIN: route-transition progress bar + bulk-delete toolbar
+   ========================================================================== */
+
+.admin-loadbar {
+  position: relative;
+  height: 3px;
+  width: 100%;
+  margin-bottom: 18px;
+  border-radius: 999px;
+  background: rgba(28, 26, 21, 0.08);
+  overflow: hidden;
+}
+
+.admin-loadbar > span {
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  border-radius: 999px;
+  background: #20654a;
+  animation: admin-loadbar-slide 1s ease-in-out infinite;
+}
+
+@keyframes admin-loadbar-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+.bulk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.bulk-hint {
+  font-size: 0.82rem;
+  color: var(--muted, #6b675e);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-loadbar > span {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

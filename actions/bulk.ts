@@ -484,6 +484,10 @@ export async function bulkAction(
       });
       count = r.count;
       auditAction = "BULK_STUDENTS_END_DATE_CHANGED";
+    } else if (data.action === "delete") {
+      const r = await prisma.student.deleteMany({ where: { id: { in: data.studentIds } } });
+      count = r.count;
+      auditAction = "BULK_STUDENTS_DELETED";
     }
 
     await createAuditLog({

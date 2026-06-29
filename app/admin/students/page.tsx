@@ -14,8 +14,11 @@ import RowDeleteButton from "@/components/RowDeleteButton";
 import Dropdown from "@/components/Dropdown";
 import Pagination from "@/components/Pagination";
 import StudentAddForm from "@/components/StudentAddForm";
+import ActionForm from "@/components/ActionForm";
+import SelectAllCheckbox from "@/components/SelectAllCheckbox";
 import { getActiveBatches, getActiveCourses } from "@/lib/catalog-cache";
 import { getStudentsWithCourseAccess } from "@/lib/course-access";
+import { bulkAction } from "@/actions/bulk";
 
 const PAGE_SIZE = 10;
 
@@ -348,10 +351,27 @@ export default async function StudentsPage({
             : `Showing ${rangeStart}–${rangeEnd} of ${filteredCount.toLocaleString()}`}
         </span>
       </div>
-      <div className="table-wrap">
+      <ActionForm
+        successMessage="Selected students deleted."
+        confirm="Delete the selected students? This permanently removes them and their progress."
+        action={async (fd: FormData) => {
+          "use server";
+          const ids = fd.getAll("studentIds").map(String).filter(Boolean);
+          if (ids.length === 0) return { ok: false, error: "Select at least one student to delete." };
+          return bulkAction({ action: "delete", studentIds: ids });
+        }}
+      >
+        <div className="bulk-toolbar">
+          <button type="submit" className="row-delete bulk-delete-btn">
+            Delete selected
+          </button>
+          <span className="bulk-hint">Tick rows (or the header box) to select.</span>
+        </div>
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
+              <th style={{ width: "36px" }}><SelectAllCheckbox /></th>
               <th>Code</th>
               <th>Student</th>
               <th>Batch</th>
@@ -363,7 +383,7 @@ export default async function StudentsPage({
           <tbody>
             {students.length === 0 && (
               <tr>
-                <td colSpan={6} className="table-empty">
+                <td colSpan={7} className="table-empty">
                   No students match the current filters.
                 </td>
               </tr>
@@ -379,6 +399,9 @@ export default async function StudentsPage({
                 s.status === "blocked" ? "blocked" : expired ? "expired" : "active";
               return (
                 <tr key={s.id}>
+                  <td>
+                    <input type="checkbox" name="studentIds" value={s.id} aria-label={`Select ${s.name}`} />
+                  </td>
                   <td>
                     <code>{s.studentCode}</code>
                   </td>
@@ -454,7 +477,8 @@ export default async function StudentsPage({
             })}
           </tbody>
         </table>
-      </div>
+        </div>
+      </ActionForm>
 
       <Pagination
         page={page}

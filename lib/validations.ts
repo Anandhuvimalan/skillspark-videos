@@ -252,4 +252,8 @@ export const bulkActionSchema = z.discriminatedUnion("action", [
     studentIds: z.array(idSchema).min(1),
     endDate: dateSchema,
   }),
+  z.object({
+    action: z.literal("delete"),
+    studentIds: z.array(idSchema).min(1),
+  }),
 ]);
