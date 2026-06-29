@@ -2,10 +2,16 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/authorization";
-import { updateBatch, deleteBatch, setBatchEnrollments } from "@/actions/batches";
+import { updateBatch, deleteBatch } from "@/actions/batches";
+import { setBatchCourses, removeStudentFromBatch } from "@/actions/enrollments";
+import { bulkAddStudentsToBatch } from "@/actions/bulk";
 import MultiCheckPicker from "@/components/MultiCheckPicker";
 import ActionForm from "@/components/ActionForm";
 import ActionButton from "@/components/ActionButton";
+
+function isoDate(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
 
 export default async function BatchEdit({ params }: { params: Promise<{ id: string }> }) {
   await requireAdmin();
@@ -13,27 +19,38 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
   const batch = await prisma.batch.findUnique({
     where: { id },
     include: {
-      students: { orderBy: { name: "asc" } },
       batchCourses: { select: { courseId: true } },
-      batchPackages: { select: { packageId: true } },
+      studentBatches: {
+        include: { student: true },
+        orderBy: { student: { name: "asc" } },
+      },
     },
   });
   if (!batch) notFound();
-  const [courses, packages] = await Promise.all([
-    prisma.course.findMany({ where: { status: "active" }, orderBy: { name: "asc" } }),
-    prisma.package.findMany({ where: { status: "active" }, orderBy: { name: "asc" } }),
-  ]);
+
+  const courses = await prisma.course.findMany({
+    where: { status: "active" },
+    orderBy: { name: "asc" },
+  });
   const checkedCourses = batch.batchCourses.map((bc) => bc.courseId);
-  const checkedPackages = batch.batchPackages.map((bp) => bp.packageId);
+  const students = batch.studentBatches.map((sb) => sb.student);
+
+  const today = new Date();
+  const end = new Date(today);
+  end.setMonth(end.getMonth() + 6);
 
   return (
     <div className="wide-canvas">
       <h1>Batch: {batch.batchCode}</h1>
+      <p>
+        Students in this batch can watch every course assigned below. Assign
+        courses progressively as classes happen.
+      </p>
 
       <div className="add-student-panel">
-        <summary className="form-card-header">
-          <span>Batch Profile</span>
-        </summary>
+        <div className="form-card-header">
+          <span>Batch profile</span>
+        </div>
         <ActionForm
           className="form-card-body"
           successMessage="Batch profile saved."
@@ -73,48 +90,79 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
       </div>
 
       <div className="add-student-panel" style={{ marginTop: "24px" }}>
-        <summary className="form-card-header">
-          <span>Courses & Packages Assigned to Batch</span>
-        </summary>
+        <div className="form-card-header">
+          <span>Courses assigned to this batch</span>
+        </div>
         <ActionForm
           className="form-card-body"
-          successMessage="Batch assignments saved."
+          successMessage="Batch courses saved."
           action={async (fd: FormData) => {
             "use server";
-            return setBatchEnrollments({
-              batchId: id,
-              courseIds: fd.getAll("courseIds"),
-              packageIds: fd.getAll("packageIds"),
-            });
+            return setBatchCourses({ batchId: id, courseIds: fd.getAll("courseIds") });
           }}
         >
           <p style={{ marginBottom: "20px", color: "var(--muted)", fontWeight: "500" }}>
             Tick to assign; untick to remove from all current and future students in this batch.
           </p>
-          <div className="pickers-grid">
-            <MultiCheckPicker
-              name="courseIds"
-              legend="Courses"
-              items={courses.map((c) => ({ id: c.id, label: c.name }))}
-              defaultChecked={checkedCourses}
-              placeholder="Search courses…"
-            />
-            <MultiCheckPicker
-              name="packageIds"
-              legend="Packages"
-              items={packages.map((p) => ({ id: p.id, label: p.name }))}
-              defaultChecked={checkedPackages}
-              placeholder="Search packages…"
-            />
-          </div>
+          <MultiCheckPicker
+            name="courseIds"
+            legend="Courses"
+            items={courses.map((c) => ({ id: c.id, label: c.name }))}
+            defaultChecked={checkedCourses}
+            placeholder="Search courses…"
+          />
           <div className="form-actions">
-            <button type="submit">Save assignments</button>
+            <button type="submit">Save courses</button>
           </div>
         </ActionForm>
       </div>
 
-      <h2 style={{ marginTop: "36px" }}>Students in batch ({batch.students.length})</h2>
-      {batch.students.length === 0 ? (
+      <div className="add-student-panel" style={{ marginTop: "24px" }}>
+        <div className="form-card-header">
+          <span>Add students to this batch</span>
+        </div>
+        <ActionForm
+          className="form-card-body"
+          successMessage="Students added to batch."
+          resetOnSuccess
+          action={async (fd: FormData) => {
+            "use server";
+            fd.set("batchId", id);
+            return bulkAddStudentsToBatch(fd);
+          }}
+        >
+          <p style={{ marginBottom: "12px", color: "var(--muted)", fontWeight: 500 }}>
+            One per line: <code>name,email</code> or <code>name,email,studentCode</code> (a bare email also works).
+            Existing students are added to the batch; new ones are created.
+          </p>
+          <div className="form-grid">
+            <div className="form-field-group">
+              <label>
+                Access start
+                <input type="date" name="defaultStartDate" defaultValue={isoDate(today)} required />
+              </label>
+            </div>
+            <div className="form-field-group">
+              <label>
+                Access end
+                <input type="date" name="defaultEndDate" defaultValue={isoDate(end)} required />
+              </label>
+            </div>
+          </div>
+          <div className="form-field-group">
+            <label>
+              Students
+              <textarea name="text" rows={6} placeholder={"Jane Doe,jane@example.com\nbob@example.com"} />
+            </label>
+          </div>
+          <div className="form-actions">
+            <button type="submit">Add students</button>
+          </div>
+        </ActionForm>
+      </div>
+
+      <h2 style={{ marginTop: "36px" }}>Students in batch ({students.length})</h2>
+      {students.length === 0 ? (
         <p className="empty-state">No students in this batch.</p>
       ) : (
         <div className="table-wrap">
@@ -128,7 +176,7 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
               </tr>
             </thead>
             <tbody>
-              {batch.students.map((s) => (
+              {students.map((s) => (
                 <tr key={s.id}>
                   <td>
                     <code>{s.studentCode}</code>
@@ -139,6 +187,16 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
                   <td className="cell-muted">{s.email}</td>
                   <td className="row-actions">
                     <Link className="row-btn" href={`/admin/students/${s.id}`}>Open</Link>
+                    <ActionButton
+                      action={async () => {
+                        "use server";
+                        return removeStudentFromBatch(s.id, id);
+                      }}
+                      successMessage={`Removed ${s.name} from batch.`}
+                      confirm={`Remove ${s.name} from this batch?`}
+                    >
+                      Remove
+                    </ActionButton>
                   </td>
                 </tr>
               ))}
@@ -150,7 +208,8 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
       <div className="danger-zone-box">
         <h2>Danger zone</h2>
         <p style={{ color: "#7f1d1d", fontWeight: "600", marginBottom: "16px" }}>
-          Deleting this batch will unassign all its students from the batch classification. Note: students themselves are not deleted.
+          Deleting this batch removes its students from the batch (and their access to its
+          courses). The students themselves are not deleted.
         </p>
         <ActionButton
           action={async () => {
@@ -158,7 +217,7 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
             return deleteBatch(id);
           }}
           successMessage={`Deleted batch “${batch.batchCode}”.`}
-          confirm={`Delete batch “${batch.batchCode}”? Students are unassigned but not deleted.`}
+          confirm={`Delete batch “${batch.batchCode}”? Students are removed from it but not deleted.`}
           redirectTo="/admin/batches"
         >
           Delete batch

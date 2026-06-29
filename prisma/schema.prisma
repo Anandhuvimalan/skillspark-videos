@@ -64,37 +64,34 @@ model VerificationToken {
 // ActorType: "admin" | "student" | "system"
 
 model Admin {
-  id        String      @id @default(cuid())
+  id        String   @id @default(cuid())
   name      String
-  email     String      @unique
-  status    String      @default("active") // "active" | "inactive"
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  email     String   @unique
+  status    String   @default("active") // "active" | "inactive"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([email])
 }
 
 model Student {
-  id              String        @id @default(cuid())
-  studentCode     String        @unique
+  id              String   @id @default(cuid())
+  studentCode     String   @unique
   name            String
-  email           String        @unique
-  batchId         String?
-  status          String        @default("active") // "active" | "blocked"
+  email           String   @unique
+  status          String   @default("active") // "active" | "blocked"
   accessStartDate DateTime
   accessEndDate   DateTime
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  batch            Batch?           @relation(fields: [batchId], references: [id], onDelete: SetNull)
-  studentPackages  StudentPackage[]
-  studentCourses   StudentCourse[]
-  videoProgress    VideoProgress[]
-  courseDenials    StudentCourseDenial[]
+  // Access is purely batch-based: a student belongs to one or more batches and
+  // can watch every course assigned to any of those batches.
+  studentBatches StudentBatch[]
+  videoProgress  VideoProgress[]
 
   @@index([email])
   @@index([studentCode])
-  @@index([batchId])
   @@index([status])
   // Recency sorts (admin lists + AI list_students) hit this constantly.
   @@index([createdAt])
@@ -108,104 +105,46 @@ model Batch {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  students       Student[]
-  batchPackages  BatchPackage[]
+  studentBatches StudentBatch[]
   batchCourses   BatchCourse[]
 
   @@index([batchCode])
   @@index([createdAt])
 }
 
-model Package {
-  id          String        @id @default(cuid())
-  name        String        @unique
-  description String?
-  imageUrl    String?       // optional cover image URL
-  status      String        @default("active") // "active" | "inactive"
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-
-  packageCourses  PackageCourse[]
-  studentPackages StudentPackage[]
-  batchPackages   BatchPackage[]
-
-  @@index([status])
-  @@index([createdAt])
-}
-
 model Course {
-  id          String        @id @default(cuid())
-  name        String        @unique
+  id          String   @id @default(cuid())
+  name        String   @unique
   description String?
-  imageUrl    String?       // optional cover image URL
-  status      String        @default("active") // "active" | "inactive"
+  imageUrl    String? // optional cover image URL
+  status      String   @default("active") // "active" | "inactive"
   // layout = "module" → course → modules → videos (default)
   // layout = "flat"   → course → videos directly (no modules)
-  layout      String        @default("module")
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  layout      String   @default("module")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  modules        Module[]
-  videos         Video[]               // videos attached directly (flat layout)
-  packageCourses PackageCourse[]
-  studentCourses StudentCourse[]
-  batchCourses   BatchCourse[]
-  studentDenials StudentCourseDenial[]
+  modules      Module[]
+  videos       Video[] // videos attached directly (flat layout)
+  batchCourses BatchCourse[]
 
   @@index([status])
   @@index([createdAt])
 }
 
-model PackageCourse {
-  id         String   @id @default(cuid())
-  packageId  String
-  courseId   String
-  createdAt  DateTime @default(now())
-
-  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
-  course  Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
-
-  @@unique([packageId, courseId])
-  @@index([courseId])
-}
-
-model StudentPackage {
+// Many-to-many student ↔ batch. A student's accessible courses are the union of
+// the courses assigned to every batch they belong to.
+model StudentBatch {
   id         String   @id @default(cuid())
   studentId  String
-  packageId  String
-  assignedAt DateTime @default(now())
-
-  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
-
-  @@unique([studentId, packageId])
-  @@index([packageId])
-}
-
-model StudentCourse {
-  id         String   @id @default(cuid())
-  studentId  String
-  courseId   String
-  assignedAt DateTime @default(now())
-
-  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  course  Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
-
-  @@unique([studentId, courseId])
-  @@index([courseId])
-}
-
-model BatchPackage {
-  id         String   @id @default(cuid())
   batchId    String
-  packageId  String
   assignedAt DateTime @default(now())
 
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
   batch   Batch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  package Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
 
-  @@unique([batchId, packageId])
-  @@index([packageId])
+  @@unique([studentId, batchId])
+  @@index([batchId])
 }
 
 model BatchCourse {
@@ -239,18 +178,18 @@ model Module {
 // Exactly one of moduleId / courseId is set, depending on the parent course's layout.
 // Module-layout course → moduleId set. Flat-layout course → courseId set.
 model Video {
-  id                  String   @id @default(cuid())
-  moduleId            String?
-  courseId            String?
-  title               String
-  description         String?
-  driveFileId         String   // canonical; URL parsed from any Drive link shape
-  videoOrder          Int      @default(0)
-  duration            Int?     // seconds; auto-fetched from Drive API
-  durationFetchedAt   DateTime?
-  status              String   @default("active") // "active" | "inactive"
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                String    @id @default(cuid())
+  moduleId          String?
+  courseId          String?
+  title             String
+  description       String?
+  driveFileId       String // canonical; URL parsed from any Drive link shape
+  videoOrder        Int       @default(0)
+  duration          Int? // seconds; auto-fetched from Drive API
+  durationFetchedAt DateTime?
+  status            String    @default("active") // "active" | "inactive"
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   module   Module?         @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   course   Course?         @relation(fields: [courseId], references: [id], onDelete: Cascade)
@@ -270,7 +209,7 @@ model Note {
   sourceType       String
   driveFileId      String?
   externalUrl      String?
-  uploadPath       String?  // server-relative, e.g. /uploads/notes/{cuid}.pdf
+  uploadPath       String? // server-relative, e.g. /uploads/notes/{cuid}.pdf
   originalFileName String?
   mimeType         String?
   downloadEnabled  Boolean  @default(false)
@@ -280,23 +219,6 @@ model Note {
   video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
 
   @@index([videoId])
-}
-
-// Per-student course denial: hard block regardless of grant path.
-// Used by admin to remove access for a single student to a course they got
-// via a package or batch, without removing them from the package/batch.
-model StudentCourseDenial {
-  id        String   @id @default(cuid())
-  studentId String
-  courseId  String
-  reason    String?
-  deniedAt  DateTime @default(now())
-
-  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  course  Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
-
-  @@unique([studentId, courseId])
-  @@index([courseId])
 }
 
 model VideoProgress {
@@ -313,21 +235,25 @@ model VideoProgress {
 
   @@unique([studentId, videoId])
   @@index([videoId])
+  // Dashboard "continue learning" (latest not-completed) + completed/in-progress
+  // counts filter by studentId+completed and sort by updatedAt.
+  @@index([studentId, completed])
+  @@index([studentId, updatedAt])
 }
 
 model AuditLog {
-  id          String    @id @default(cuid())
-  actorId     String?
-  actorEmail  String?
-  actorType   String    // "admin" | "student" | "system"
-  action      String
-  entityType  String?
-  entityId    String?
-  oldValue    String? // JSON-encoded
-  newValue    String? // JSON-encoded
-  ipAddress   String?
-  userAgent   String?
-  createdAt   DateTime  @default(now())
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorEmail String?
+  actorType  String // "admin" | "student" | "system"
+  action     String
+  entityType String?
+  entityId   String?
+  oldValue   String? // JSON-encoded
+  newValue   String? // JSON-encoded
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
 
   @@index([action])
   @@index([entityType, entityId])

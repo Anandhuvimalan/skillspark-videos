@@ -13,7 +13,6 @@ import { prisma } from "@/lib/db";
 export const CATALOG_TAGS = {
   batches: "catalog:batches",
   courses: "catalog:courses",
-  packages: "catalog:packages",
   auditFacets: "catalog:audit-facets",
 } as const;
 
@@ -36,17 +35,6 @@ export const getActiveCourses = unstable_cache(
     }),
   ["catalog:courses:v1"],
   { tags: [CATALOG_TAGS.courses], revalidate: 300 },
-);
-
-export const getActivePackages = unstable_cache(
-  () =>
-    prisma.package.findMany({
-      where: { status: "active" },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    }),
-  ["catalog:packages:v1"],
-  { tags: [CATALOG_TAGS.packages], revalidate: 300 },
 );
 
 export const getAuditFacets = unstable_cache(

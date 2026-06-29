@@ -4,14 +4,13 @@ import {
   BookOpen,
   CalendarDays,
   Clock,
-  PackageOpen,
   Play,
   PlayCircle,
   Sparkles,
 } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { requireStudent, AuthError } from "@/lib/authorization";
-import { getDashboard, type DashboardPackage, type DashboardCourse } from "@/lib/course-access";
+import { getDashboard, type DashboardCourse } from "@/lib/course-access";
 import StudentTopbar from "@/components/StudentTopbar";
 
 function formatDuration(s: number): string | null {
@@ -33,7 +32,7 @@ export default async function Dashboard() {
   }
   // Fetch the dashboard catalog, the resume target, and progress counts in
   // parallel — they're independent, so there's no reason to await in series.
-  const [{ packages, individualCourses }, lastProgress, completedLessons, inProgressLessons] =
+  const [{ courses }, lastProgress, completedLessons, inProgressLessons] =
     await Promise.all([
       getDashboard(student.id),
       // "Continue learning" — most recently touched, not-yet-completed video.
@@ -61,10 +60,8 @@ export default async function Dashboard() {
       }),
     ]);
 
-  const hasContent = packages.length > 0 || individualCourses.length > 0;
-  const totalCourses =
-    individualCourses.length +
-    packages.reduce((sum, p) => sum + p.accessibleCourseCount, 0);
+  const hasContent = courses.length > 0;
+  const totalCourses = courses.length;
   const accessUntil = student.accessEndDate.toISOString().slice(0, 10);
   const daysLeft = Math.max(
     0,
@@ -116,14 +113,9 @@ export default async function Dashboard() {
             </p>
             <div className="sx-chips">
               <span className="sx-chip">
-                <PackageOpen size={14} aria-hidden="true" />
-                <strong>{packages.length}</strong>
-                <small>package{packages.length === 1 ? "" : "s"}</small>
-              </span>
-              <span className="sx-chip">
                 <BookOpen size={14} aria-hidden="true" />
-                <strong>{individualCourses.length}</strong>
-                <small>course{individualCourses.length === 1 ? "" : "s"}</small>
+                <strong>{courses.length}</strong>
+                <small>course{courses.length === 1 ? "" : "s"}</small>
               </span>
               <span className="sx-chip">
                 <CalendarDays size={14} aria-hidden="true" />
@@ -209,34 +201,17 @@ export default async function Dashboard() {
           </section>
         )}
 
-        {packages.length > 0 && (
-          <section className="sx-row" aria-labelledby="row-packages">
-            <header className="sx-rowhead">
-              <div>
-                <span className="sx-eyebrow">Bundles</span>
-                <h2 id="row-packages">Your packages</h2>
-              </div>
-              <span className="sx-count">{packages.length}</span>
-            </header>
-            <div className="sx-grid">
-              {packages.map((p) => (
-                <PackageTile key={p.id} pkg={p} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {individualCourses.length > 0 && (
+        {courses.length > 0 && (
           <section className="sx-row" aria-labelledby="row-courses">
             <header className="sx-rowhead">
               <div>
-                <span className="sx-eyebrow">Direct access</span>
+                <span className="sx-eyebrow">Your library</span>
                 <h2 id="row-courses">Your courses</h2>
               </div>
-              <span className="sx-count">{individualCourses.length}</span>
+              <span className="sx-count">{courses.length}</span>
             </header>
             <div className="sx-grid">
-              {individualCourses.map((c) => (
+              {courses.map((c) => (
                 <CourseTile key={c.id} course={c} />
               ))}
             </div>
@@ -249,8 +224,8 @@ export default async function Dashboard() {
               <Sparkles size={20} aria-hidden="true" />
               <h3>Nothing assigned yet</h3>
               <p>
-                Your admin hasn&apos;t enrolled this account in any courses or
-                packages. Reach out to them to get started.
+                Your admin hasn&apos;t added this account to a batch with courses
+                yet. Reach out to them to get started.
               </p>
             </div>
           </section>
@@ -272,42 +247,6 @@ function tileTone(name: string): string {
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
   const n = Math.abs(h) % 5;
   return ["violet", "cyan", "rose", "blue", "amber"][n]!;
-}
-
-function PackageTile({ pkg }: { pkg: DashboardPackage }) {
-  return (
-    <Link
-      href={`/packages/${pkg.id}`}
-      className="sx-tile"
-      data-tone={tileTone(pkg.name)}
-    >
-      <div className="sx-tile-cover">
-        {pkg.imageUrl ? (
-          <img
-            src={pkg.imageUrl}
-            alt=""
-            className="sx-tile-image"
-            loading="lazy"
-            decoding="async"
-          />
-        ) : (
-          <span className="sx-tile-monogram">{monogram(pkg.name)}</span>
-        )}
-        <span className="sx-tile-badge">
-          <PackageOpen size={10} aria-hidden="true" />
-          Package
-        </span>
-      </div>
-      <div className="sx-tile-body">
-        <span className="sx-tile-title">{pkg.name}</span>
-        <span className="sx-tile-meta">
-          <BookOpen size={12} aria-hidden="true" />
-          {pkg.accessibleCourseCount} course{pkg.accessibleCourseCount === 1 ? "" : "s"}
-        </span>
-        {pkg.description ? <p>{pkg.description}</p> : null}
-      </div>
-    </Link>
-  );
 }
 
 function CourseTile({ course }: { course: DashboardCourse }) {

@@ -5,662 +5,495 @@ import { prisma } from "@/lib/db";
 import { createAuditLog, type AuditAction } from "@/lib/audit-log";
 import {
   parseBulkStudents,
+  parseBatchStudents,
   parseBulkBatches,
   parseBulkCourses,
   parseIdentifierList,
 } from "@/lib/bulk";
-import { bulkActionSchema, dateSchema } from "@/lib/validations";
+import { bulkActionSchema, dateSchema, idSchema } from "@/lib/validations";
 import { z } from "zod";
 import { bad, withAdminD, type RD } from "./_shared";
 import { CATALOG_TAGS } from "@/lib/catalog-cache";
 
-// Bulk actions always return a payload, so use RD (required data) locally.
 type R<T> = RD<T>;
 
 const MAX_TEXT_LEN = 200_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
+/** Allocates unique studentCodes (SS0001, …) skipping any already in the DB. */
+async function makeCodeAllocator(prefix = "SS"): Promise<() => string> {
+  const existing = new Set(
+    (await prisma.student.findMany({ select: { studentCode: true } })).map((s) => s.studentCode),
+  );
+  let counter = 1;
+  return () => {
+    let code: string;
+    do {
+      code = `${prefix}${String(counter).padStart(4, "0")}`;
+      counter++;
+    } while (existing.has(code));
+    existing.add(code);
+    return code;
+  };
+}
+
+async function readFormText(formData: FormData): Promise<string | { error: string }> {
+  let text = String(formData.get("text") ?? "");
+  const file = formData.get("file");
+  if (file instanceof File && file.size > 0) {
+    if (file.size > MAX_FILE_BYTES) return { error: "file exceeds 5 MB" };
+    const fileText = await file.text();
+    text = text ? `${text}\n${fileText}` : fileText;
+  }
+  return text;
+}
+
+// ============================================================
+// Flow 1: add students to an already-set-up batch
+//   batchId + paste of `name,email[,studentCode]` (or bare emails)
+// ============================================================
+const batchStudentsArgs = z.object({
+  batchId: idSchema,
+  text: z.string().min(1).max(MAX_TEXT_LEN),
+  defaultStartDate: dateSchema,
+  defaultEndDate: dateSchema,
+});
+
+export async function bulkAddStudentsToBatch(
+  formData: FormData,
+): Promise<R<{ created: number; addedExisting: number; skipped: number; failed: { line: number; reason: string }[] }>> {
+  return withAdminD(async (admin) => {
+    const text = await readFormText(formData);
+    if (typeof text !== "string") return bad(text.error);
+    if (!text.trim()) return bad("no input provided");
+
+    const parsed = batchStudentsArgs.safeParse({
+      batchId: formData.get("batchId"),
+      text,
+      defaultStartDate: formData.get("defaultStartDate"),
+      defaultEndDate: formData.get("defaultEndDate"),
+    });
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
+    if (parsed.data.defaultEndDate < parsed.data.defaultStartDate)
+      return bad("endDate before startDate");
+
+    const batch = await prisma.batch.findUnique({ where: { id: parsed.data.batchId }, select: { id: true } });
+    if (!batch) return bad("batch not found");
+
+    const { rows: rawRows, errors } = parseBatchStudents(parsed.data.text);
+    const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
+    let skipped = 0;
+
+    // Dedupe within input by email (first wins).
+    const seen = new Set<string>();
+    const rows = rawRows.filter((r) => {
+      if (seen.has(r.email)) { skipped++; return false; }
+      seen.add(r.email);
+      return true;
+    });
+
+    const existing = rows.length
+      ? await prisma.student.findMany({
+          where: { email: { in: rows.map((r) => r.email) } },
+          select: { id: true, email: true },
+        })
+      : [];
+    const existingByEmail = new Map(existing.map((s) => [s.email, s.id]));
+
+    const nextCode = await makeCodeAllocator();
+    let created = 0;
+    let addedExisting = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const existingId = existingByEmail.get(row.email);
+      try {
+        if (existingId) {
+          const r = await prisma.studentBatch.createMany({
+            data: [{ studentId: existingId, batchId: batch.id }],
+            skipDuplicates: true,
+          });
+          if (r.count > 0) addedExisting++; else skipped++;
+        } else {
+          const code = row.studentCode ?? nextCode();
+          await prisma.$transaction(async (tx) => {
+            const s = await tx.student.create({
+              data: {
+                studentCode: code,
+                name: row.name,
+                email: row.email,
+                accessStartDate: parsed.data.defaultStartDate,
+                accessEndDate: parsed.data.defaultEndDate,
+              },
+            });
+            await tx.studentBatch.create({ data: { studentId: s.id, batchId: batch.id } });
+          });
+          created++;
+        }
+      } catch (e: any) {
+        if (e?.code === "P2002") skipped++;
+        else failed.push({ line: i + 1, reason: "create failed" });
+      }
+    }
+
+    await createAuditLog({
+      actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+      action: "BULK_STUDENTS_ADDED_TO_BATCH", entityType: "Batch", entityId: batch.id,
+      newValue: { created, addedExisting, skipped, failedCount: failed.length },
+    });
+    revalidatePath("/admin/students");
+    revalidatePath(`/admin/batches/${batch.id}`);
+    return { ok: true, data: { created, addedExisting, skipped, failed } };
+  });
+}
+
+// ============================================================
+// Flow 2: full bootstrap
+//   paste `studentCode,name,email,batchCode,courseNames` (+ -separated courses).
+//   Ensures the batch exists, assigns the named courses to it, creates the
+//   student and adds them to the batch. Optional applyBatchId adds everyone to
+//   an additional existing batch.
+// ============================================================
 const bulkAddArgs = z.object({
   text: z.string().min(1).max(MAX_TEXT_LEN),
   defaultStartDate: dateSchema,
   defaultEndDate: dateSchema,
 });
 
-/**
- * Accepts FormData. The same form supports three orthogonal ways to express enrollments:
- *
- *   1. Paste/CSV columns: studentCode,name,email[,batchCode[,courseNames[,packageNames]]]
- *      — courseNames/packageNames are `+`-separated by name (e.g. "Excel+SQL")
- *   2. Apply-to-all selectors: applyBatchId, applyCourseIds[], applyPackageIds[]
- *      — added on top of every row's enrollments
- *
- * Resolution: row's `batchCode` wins for batch; for courses/packages we union the
- * row's parsed names with the form-wide apply-to-all list.
- */
 export async function bulkAddStudentsFromForm(
   formData: FormData,
 ): Promise<R<{ created: number; skipped: number; failed: { line: number; reason: string }[] }>> {
   return withAdminD(async (admin) => {
+    const text = await readFormText(formData);
+    if (typeof text !== "string") return bad(text.error);
+    if (!text.trim()) return bad("no input provided");
 
-  let text = String(formData.get("text") ?? "");
-  const file = formData.get("file");
-  if (file instanceof File && file.size > 0) {
-    if (file.size > MAX_FILE_BYTES) return { ok: false, error: "file exceeds 5 MB" };
-    const fileText = await file.text();
-    text = text ? `${text}\n${fileText}` : fileText;
-  }
-  if (!text.trim()) return { ok: false, error: "no input provided" };
+    const parsed = bulkAddArgs.safeParse({
+      text,
+      defaultStartDate: formData.get("defaultStartDate"),
+      defaultEndDate: formData.get("defaultEndDate"),
+    });
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
+    if (parsed.data.defaultEndDate < parsed.data.defaultStartDate)
+      return bad("endDate before startDate");
 
-  const parsed = bulkAddArgs.safeParse({
-    text,
-    defaultStartDate: formData.get("defaultStartDate"),
-    defaultEndDate: formData.get("defaultEndDate"),
-  });
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-  if (parsed.data.defaultEndDate < parsed.data.defaultStartDate)
-    return { ok: false, error: "endDate before startDate" };
+    const applyBatchId = String(formData.get("applyBatchId") ?? "") || null;
 
-  // Apply-to-all selectors.
-  const applyBatchId = String(formData.get("applyBatchId") ?? "") || null;
-  const applyCourseIds = formData.getAll("applyCourseIds").map(String).filter(Boolean);
-  const applyPackageIds = formData.getAll("applyPackageIds").map(String).filter(Boolean);
+    const { rows: rawRows, errors } = parseBulkStudents(parsed.data.text);
+    const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
+    let skipped = 0;
 
-  const { rows: rawRows, errors } = parseBulkStudents(parsed.data.text);
-  const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
-  let skipped = 0;
+    // Dedupe within input by studentCode + email (first wins).
+    const seenCodes = new Set<string>();
+    const seenEmails = new Set<string>();
+    const rows = rawRows.filter((r) => {
+      if (seenCodes.has(r.studentCode) || seenEmails.has(r.email)) { skipped++; return false; }
+      seenCodes.add(r.studentCode); seenEmails.add(r.email);
+      return true;
+    });
 
-  // 1. Dedupe within the input itself by studentCode and email (first wins).
-  const seenCodes = new Set<string>();
-  const seenEmails = new Set<string>();
-  const rows: typeof rawRows = [];
-  for (let i = 0; i < rawRows.length; i++) {
-    const row = rawRows[i];
-    if (seenCodes.has(row.studentCode) || seenEmails.has(row.email)) {
-      skipped++;
-      continue;
-    }
-    seenCodes.add(row.studentCode);
-    seenEmails.add(row.email);
-    rows.push(row);
-  }
+    // Pre-resolve existing students, batches and courses.
+    const [existing, courseRows] = await Promise.all([
+      rows.length
+        ? prisma.student.findMany({
+            where: { OR: [
+              { studentCode: { in: rows.map((r) => r.studentCode) } },
+              { email: { in: rows.map((r) => r.email) } },
+            ] },
+            select: { studentCode: true, email: true },
+          })
+        : Promise.resolve([]),
+      prisma.course.findMany({ select: { id: true, name: true } }),
+    ]);
+    const existingCodes = new Set(existing.map((s) => s.studentCode));
+    const existingEmails = new Set(existing.map((s) => s.email));
+    const courseByName = new Map(courseRows.map((c) => [c.name, c.id]));
 
-  // 2. Pre-check DB for existing studentCode or email; skip those silently.
-  const existing = rows.length
-    ? await prisma.student.findMany({
-        where: {
-          OR: [
-            { studentCode: { in: rows.map((r) => r.studentCode) } },
-            { email: { in: rows.map((r) => r.email) } },
-          ],
-        },
-        select: { studentCode: true, email: true },
-      })
-    : [];
-  const existingCodes = new Set(existing.map((s) => s.studentCode));
-  const existingEmails = new Set(existing.map((s) => s.email));
-
-  // 3. Resolve referenced batch/course/package names in batch.
-  const batchCodes = [...new Set(rows.map((r) => r.batchCode).filter((b): b is string => !!b))];
-  const courseNames = [...new Set(rows.flatMap((r) => r.courseNames))];
-  const packageNames = [...new Set(rows.flatMap((r) => r.packageNames))];
-  const [batchesByCode, coursesByName, packagesByName] = await Promise.all([
-    batchCodes.length
-      ? prisma.batch.findMany({ where: { batchCode: { in: batchCodes } } })
-        .then((bs) => new Map(bs.map((b) => [b.batchCode, b.id])))
-      : Promise.resolve(new Map<string, string>()),
-    courseNames.length
-      ? prisma.course.findMany({ where: { name: { in: courseNames } } })
-        .then((cs) => new Map(cs.map((c) => [c.name, c.id])))
-      : Promise.resolve(new Map<string, string>()),
-    packageNames.length
-      ? prisma.package.findMany({ where: { name: { in: packageNames } } })
-        .then((ps) => new Map(ps.map((p) => [p.name, p.id])))
-      : Promise.resolve(new Map<string, string>()),
-  ]);
-
-  // 3b. Auto-create any batchCodes referenced by rows that don't exist yet.
-  // Keeps bulk-upload from blocking on "unknown batchCode" — admins can add a
-  // batch implicitly by mentioning it on a student row. Batches created this
-  // way have batchName=batchCode and no course/package mappings; admin can
-  // edit later.
-  const missingBatchCodes = batchCodes.filter((code) => !batchesByCode.has(code));
-  const autoCreatedBatches: { id: string; batchCode: string }[] = [];
-  for (const code of missingBatchCodes) {
-    // Defensive: batchCode must satisfy schema regex (parser already validates).
-    if (!/^[A-Za-z0-9 _-]+$/.test(code)) continue;
-    try {
-      const b = await prisma.batch.create({
-        data: {
-          batchCode: code,
-          batchName: code,
-          description: "Auto-created from bulk student upload",
-        },
-      });
-      batchesByCode.set(code, b.id);
-      autoCreatedBatches.push({ id: b.id, batchCode: code });
-    } catch (e: any) {
-      // Race: someone else created the same batchCode. Re-read it.
-      if (e?.code === "P2002") {
-        const existing = await prisma.batch.findUnique({
-          where: { batchCode: code },
-          select: { id: true },
-        });
-        if (existing) batchesByCode.set(code, existing.id);
+    // Resolve / auto-create the referenced batches once.
+    const batchCodes = [...new Set(rows.map((r) => r.batchCode).filter((b): b is string => !!b))];
+    const batchByCode = new Map<string, string>();
+    if (batchCodes.length) {
+      const found = await prisma.batch.findMany({ where: { batchCode: { in: batchCodes } } });
+      found.forEach((b) => batchByCode.set(b.batchCode, b.id));
+      for (const code of batchCodes.filter((c) => !batchByCode.has(c))) {
+        try {
+          const b = await prisma.batch.create({
+            data: { batchCode: code, batchName: code, description: "Auto-created from bulk student upload" },
+          });
+          batchByCode.set(code, b.id);
+          await createAuditLog({
+            actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+            action: "BATCH_CREATED", entityType: "Batch", entityId: b.id,
+            newValue: { batchCode: code, source: "bulk-students-auto" },
+          });
+        } catch (e: any) {
+          if (e?.code === "P2002") {
+            const again = await prisma.batch.findUnique({ where: { batchCode: code }, select: { id: true } });
+            if (again) batchByCode.set(code, again.id);
+          }
+        }
       }
-      // Other failures fall through: rows referencing this code will fail with
-      // "unknown batchCode" below, which is the correct behavior.
+      revalidateTag(CATALOG_TAGS.batches);
     }
-  }
-  // Audit each auto-create so the trail records which batches were materialized
-  // implicitly vs. created via the explicit batch form.
-  for (const b of autoCreatedBatches) {
+
+    let created = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (existingCodes.has(row.studentCode) || existingEmails.has(row.email)) { skipped++; continue; }
+
+      // Resolve this row's batch (row code, else applyBatchId).
+      const rowBatchId = row.batchCode ? batchByCode.get(row.batchCode) : applyBatchId;
+      const batchIds = [...new Set([rowBatchId, applyBatchId].filter((b): b is string => !!b))];
+
+      // Resolve course names → ids (must exist).
+      const courseIds: string[] = [];
+      let courseErr: string | null = null;
+      for (const n of row.courseNames) {
+        const id = courseByName.get(n);
+        if (!id) { courseErr = `unknown course "${n}"`; break; }
+        courseIds.push(id);
+      }
+      if (courseErr) { failed.push({ line: i + 1, reason: courseErr }); continue; }
+
+      try {
+        await prisma.$transaction(async (tx) => {
+          const s = await tx.student.create({
+            data: {
+              studentCode: row.studentCode,
+              name: row.name,
+              email: row.email,
+              accessStartDate: parsed.data.defaultStartDate,
+              accessEndDate: parsed.data.defaultEndDate,
+            },
+          });
+          if (batchIds.length) {
+            await tx.studentBatch.createMany({
+              data: batchIds.map((batchId) => ({ studentId: s.id, batchId })),
+              skipDuplicates: true,
+            });
+          }
+          // Assign the row's named courses to the row's batch.
+          if (courseIds.length && rowBatchId) {
+            await tx.batchCourse.createMany({
+              data: courseIds.map((courseId) => ({ batchId: rowBatchId, courseId })),
+              skipDuplicates: true,
+            });
+          }
+        });
+        created++;
+      } catch (e: any) {
+        if (e?.code === "P2002") skipped++;
+        else if (e?.code === "P2003") failed.push({ line: i + 1, reason: "invalid batch/course reference" });
+        else failed.push({ line: i + 1, reason: "create failed" });
+      }
+    }
+
     await createAuditLog({
       actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-      action: "BATCH_CREATED", entityType: "Batch", entityId: b.id,
-      newValue: { batchCode: b.batchCode, batchName: b.batchCode, source: "bulk-students-auto" },
+      action: "BULK_STUDENTS_CREATED", entityType: "Student",
+      newValue: { created, skipped, failedCount: failed.length, applyBatchId },
     });
-  }
-
-  let created = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-
-    // Skip silently if already in DB.
-    if (existingCodes.has(row.studentCode) || existingEmails.has(row.email)) {
-      skipped++;
-      continue;
-    }
-
-    // Resolve batch.
-    let batchId: string | null = null;
-    if (row.batchCode) {
-      const id = batchesByCode.get(row.batchCode);
-      if (!id) {
-        failed.push({ line: i + 1, reason: `unknown batchCode ${row.batchCode}` });
-        continue;
-      }
-      batchId = id;
-    } else if (applyBatchId) {
-      batchId = applyBatchId;
-    }
-
-    // Resolve courses (row + apply-to-all).
-    const rowCourseIds: string[] = [];
-    let courseResolveError: string | null = null;
-    for (const n of row.courseNames) {
-      const id = coursesByName.get(n);
-      if (!id) { courseResolveError = `unknown course "${n}"`; break; }
-      rowCourseIds.push(id);
-    }
-    if (courseResolveError) {
-      failed.push({ line: i + 1, reason: courseResolveError });
-      continue;
-    }
-    const courseIds = [...new Set([...rowCourseIds, ...applyCourseIds])];
-
-    // Resolve packages (row + apply-to-all).
-    const rowPackageIds: string[] = [];
-    let packageResolveError: string | null = null;
-    for (const n of row.packageNames) {
-      const id = packagesByName.get(n);
-      if (!id) { packageResolveError = `unknown package "${n}"`; break; }
-      rowPackageIds.push(id);
-    }
-    if (packageResolveError) {
-      failed.push({ line: i + 1, reason: packageResolveError });
-      continue;
-    }
-    const packageIds = [...new Set([...rowPackageIds, ...applyPackageIds])];
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        const s = await tx.student.create({
-          data: {
-            studentCode: row.studentCode,
-            name: row.name,
-            email: row.email,
-            batchId,
-            accessStartDate: parsed.data.defaultStartDate,
-            accessEndDate: parsed.data.defaultEndDate,
-          },
-        });
-        if (courseIds.length) {
-          await tx.studentCourse.createMany({
-            data: courseIds.map((courseId) => ({ studentId: s.id, courseId })),
-          });
-        }
-        if (packageIds.length) {
-          await tx.studentPackage.createMany({
-            data: packageIds.map((packageId) => ({ studentId: s.id, packageId })),
-          });
-        }
-      });
-      created++;
-    } catch (e: any) {
-      if (e?.code === "P2002") {
-        // Race: someone else inserted between our pre-check and create. Treat as duplicate.
-        skipped++;
-      } else if (e?.code === "P2003") {
-        failed.push({ line: i + 1, reason: "invalid course/package/batch reference" });
-      } else {
-        failed.push({ line: i + 1, reason: "create failed" });
-      }
-    }
-  }
-  await createAuditLog({
-    actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-    action: "BULK_STUDENTS_CREATED", entityType: "Student",
-    newValue: {
-      created,
-      skipped,
-      failedCount: failed.length,
-      applyBatchId,
-      applyCourseIdsCount: applyCourseIds.length,
-      applyPackageIdsCount: applyPackageIds.length,
-      autoCreatedBatches: autoCreatedBatches.map((b) => b.batchCode),
-    },
-  });
-  revalidatePath("/admin/students");
-  if (autoCreatedBatches.length) {
+    revalidatePath("/admin/students");
     revalidatePath("/admin/batches");
-    revalidateTag(CATALOG_TAGS.batches);
-  }
-  return { ok: true, data: { created, skipped, failed } };
+    return { ok: true, data: { created, skipped, failed } };
   });
 }
 
-const bulkEnrollArgs = z.object({
-  identifiers: z.string().min(1).max(MAX_TEXT_LEN),
-  courseId: z.string().optional(),
-  packageId: z.string().optional(),
-}).refine((a) => !!a.courseId !== !!a.packageId, {
-  message: "provide exactly one of courseId or packageId",
-});
+// ============================================================
+// Bulk add batches (batchCode,batchName[,description[,courseNames]])
+// ============================================================
+const bulkBatchesArgs = z.object({ text: z.string().min(1).max(MAX_TEXT_LEN) });
 
-export async function bulkEnrollStudentsFromForm(
-  formData: FormData,
-): Promise<R<{ assigned: number; skipped: { ident: string; reason: string }[] }>> {
-  return withAdminD(async (admin) => {
-
-  let identifiers = String(formData.get("identifiers") ?? "");
-  const file = formData.get("file");
-  if (file instanceof File && file.size > 0) {
-    if (file.size > MAX_FILE_BYTES) return { ok: false, error: "file exceeds 5 MB" };
-    const t = await file.text();
-    identifiers = identifiers ? `${identifiers}\n${t}` : t;
-  }
-  const parsed = bulkEnrollArgs.safeParse({
-    identifiers,
-    courseId: formData.get("courseId") || undefined,
-    packageId: formData.get("packageId") || undefined,
-  });
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-
-  const idents = parseIdentifierList(parsed.data.identifiers);
-  if (idents.length === 0) return { ok: false, error: "no identifiers provided" };
-
-  const matches = await prisma.student.findMany({
-    where: {
-      OR: [
-        { studentCode: { in: idents } },
-        { email: { in: idents.map((i) => i.toLowerCase()) } },
-      ],
-    },
-    select: { id: true, studentCode: true, email: true },
-  });
-  const byKey = new Map<string, string>();
-  for (const s of matches) {
-    byKey.set(s.studentCode, s.id);
-    byKey.set(s.email.toLowerCase(), s.id);
-  }
-
-  const skipped: { ident: string; reason: string }[] = [];
-  const studentIds: string[] = [];
-  for (const ident of idents) {
-    const id = byKey.get(ident) ?? byKey.get(ident.toLowerCase());
-    if (!id) skipped.push({ ident, reason: "no match" });
-    else if (!studentIds.includes(id)) studentIds.push(id);
-  }
-  if (studentIds.length === 0) return { ok: true, data: { assigned: 0, skipped } };
-
-  let assigned = 0;
-  if (parsed.data.courseId) {
-    for (const sid of studentIds) {
-      try {
-        await prisma.studentCourse.create({
-          data: { studentId: sid, courseId: parsed.data.courseId },
-        });
-        assigned++;
-      } catch (e: any) {
-        if (e?.code === "P2002") skipped.push({ ident: sid, reason: "already enrolled" });
-        else if (e?.code === "P2003") skipped.push({ ident: sid, reason: "course not found" });
-        else skipped.push({ ident: sid, reason: "create failed" });
-      }
-    }
-  } else if (parsed.data.packageId) {
-    for (const sid of studentIds) {
-      try {
-        await prisma.studentPackage.create({
-          data: { studentId: sid, packageId: parsed.data.packageId },
-        });
-        assigned++;
-      } catch (e: any) {
-        if (e?.code === "P2002") skipped.push({ ident: sid, reason: "already enrolled" });
-        else if (e?.code === "P2003") skipped.push({ ident: sid, reason: "package not found" });
-        else skipped.push({ ident: sid, reason: "create failed" });
-      }
-    }
-  }
-
-  await createAuditLog({
-    actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-    action: "BULK_ENROLLMENT_CREATED",
-    entityType: parsed.data.courseId ? "Course" : "Package",
-    entityId: parsed.data.courseId ?? parsed.data.packageId ?? null,
-    newValue: { assigned, skippedCount: skipped.length },
-  });
-  revalidatePath("/admin/enrollments");
-  return { ok: true, data: { assigned, skipped } };
-  });
-}
-
-// ---------- Bulk add batches ----------
-
-const bulkBatchesArgs = z.object({
-  text: z.string().min(1).max(MAX_TEXT_LEN),
-});
-
-/**
- * Accepts FormData with `text` (paste) and/or `file` (CSV/.txt). Same dedup story
- * as students: dedupe within input by batchCode, then pre-check DB and skip
- * existing batchCodes. Resolves courseNames/packageNames per row + apply-to-all
- * pickers, inserts batch + assignments in one transaction.
- */
 export async function bulkAddBatchesFromForm(
   formData: FormData,
 ): Promise<R<{ created: number; skipped: number; failed: { line: number; reason: string }[] }>> {
   return withAdminD(async (admin) => {
+    const text = await readFormText(formData);
+    if (typeof text !== "string") return bad(text.error);
+    if (!text.trim()) return bad("no input provided");
 
-  let text = String(formData.get("text") ?? "");
-  const file = formData.get("file");
-  if (file instanceof File && file.size > 0) {
-    if (file.size > MAX_FILE_BYTES) return { ok: false, error: "file exceeds 5 MB" };
-    const t = await file.text();
-    text = text ? `${text}\n${t}` : t;
-  }
-  if (!text.trim()) return { ok: false, error: "no input provided" };
+    const parsed = bulkBatchesArgs.safeParse({ text });
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
 
-  const parsed = bulkBatchesArgs.safeParse({ text });
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+    const applyCourseIds = formData.getAll("applyCourseIds").map(String).filter(Boolean);
 
-  const applyCourseIds = formData.getAll("applyCourseIds").map(String).filter(Boolean);
-  const applyPackageIds = formData.getAll("applyPackageIds").map(String).filter(Boolean);
+    const { rows: rawRows, errors } = parseBulkBatches(parsed.data.text);
+    const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
+    let skipped = 0;
 
-  const { rows: rawRows, errors } = parseBulkBatches(parsed.data.text);
-  const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
-  let skipped = 0;
+    const seen = new Set<string>();
+    const rows = rawRows.filter((r) => {
+      if (seen.has(r.batchCode)) { skipped++; return false; }
+      seen.add(r.batchCode);
+      return true;
+    });
 
-  // 1. Within-input dedup by batchCode (first wins).
-  const seen = new Set<string>();
-  const rows: typeof rawRows = [];
-  for (const r of rawRows) {
-    if (seen.has(r.batchCode)) { skipped++; continue; }
-    seen.add(r.batchCode);
-    rows.push(r);
-  }
+    const [existing, coursesByName] = await Promise.all([
+      rows.length
+        ? prisma.batch.findMany({ where: { batchCode: { in: rows.map((r) => r.batchCode) } }, select: { batchCode: true } })
+        : Promise.resolve([]),
+      prisma.course
+        .findMany({ select: { id: true, name: true } })
+        .then((cs) => new Map(cs.map((c) => [c.name, c.id]))),
+    ]);
+    const existingCodes = new Set(existing.map((b) => b.batchCode));
 
-  // 2. Pre-check DB.
-  const existing = rows.length
-    ? await prisma.batch.findMany({
-        where: { batchCode: { in: rows.map((r) => r.batchCode) } },
-        select: { batchCode: true },
-      })
-    : [];
-  const existingCodes = new Set(existing.map((b) => b.batchCode));
+    let created = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (existingCodes.has(row.batchCode)) { skipped++; continue; }
 
-  // 3. Resolve referenced course/package names.
-  const courseNames = [...new Set(rows.flatMap((r) => r.courseNames))];
-  const packageNames = [...new Set(rows.flatMap((r) => r.packageNames))];
-  const [coursesByName, packagesByName] = await Promise.all([
-    courseNames.length
-      ? prisma.course.findMany({ where: { name: { in: courseNames } } })
-        .then((cs) => new Map(cs.map((c) => [c.name, c.id])))
-      : Promise.resolve(new Map<string, string>()),
-    packageNames.length
-      ? prisma.package.findMany({ where: { name: { in: packageNames } } })
-        .then((ps) => new Map(ps.map((p) => [p.name, p.id])))
-      : Promise.resolve(new Map<string, string>()),
-  ]);
+      const rowCourseIds: string[] = [];
+      let resolveErr: string | null = null;
+      for (const n of row.courseNames) {
+        const id = coursesByName.get(n);
+        if (!id) { resolveErr = `unknown course "${n}"`; break; }
+        rowCourseIds.push(id);
+      }
+      if (resolveErr) { failed.push({ line: i + 1, reason: resolveErr }); continue; }
+      const courseIds = [...new Set([...rowCourseIds, ...applyCourseIds])];
 
-  let created = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (existingCodes.has(row.batchCode)) { skipped++; continue; }
-
-    // Resolve names → IDs.
-    const rowCourseIds: string[] = [];
-    let resolveErr: string | null = null;
-    for (const n of row.courseNames) {
-      const id = coursesByName.get(n);
-      if (!id) { resolveErr = `unknown course "${n}"`; break; }
-      rowCourseIds.push(id);
-    }
-    if (resolveErr) { failed.push({ line: i + 1, reason: resolveErr }); continue; }
-
-    const rowPackageIds: string[] = [];
-    for (const n of row.packageNames) {
-      const id = packagesByName.get(n);
-      if (!id) { resolveErr = `unknown package "${n}"`; break; }
-      rowPackageIds.push(id);
-    }
-    if (resolveErr) { failed.push({ line: i + 1, reason: resolveErr }); continue; }
-
-    const courseIds = [...new Set([...rowCourseIds, ...applyCourseIds])];
-    const packageIds = [...new Set([...rowPackageIds, ...applyPackageIds])];
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        const b = await tx.batch.create({
-          data: {
-            batchCode: row.batchCode,
-            batchName: row.batchName,
-            description: row.description ?? null,
-          },
+      try {
+        await prisma.$transaction(async (tx) => {
+          const b = await tx.batch.create({
+            data: { batchCode: row.batchCode, batchName: row.batchName, description: row.description ?? null },
+          });
+          if (courseIds.length) {
+            await tx.batchCourse.createMany({
+              data: courseIds.map((courseId) => ({ batchId: b.id, courseId })),
+              skipDuplicates: true,
+            });
+          }
         });
-        if (courseIds.length) {
-          await tx.batchCourse.createMany({
-            data: courseIds.map((courseId) => ({ batchId: b.id, courseId })),
-          });
-        }
-        if (packageIds.length) {
-          await tx.batchPackage.createMany({
-            data: packageIds.map((packageId) => ({ batchId: b.id, packageId })),
-          });
-        }
-      });
-      created++;
-    } catch (e: any) {
-      if (e?.code === "P2002") skipped++;
-      else if (e?.code === "P2003") failed.push({ line: i + 1, reason: "invalid course/package reference" });
-      else failed.push({ line: i + 1, reason: "create failed" });
+        created++;
+      } catch (e: any) {
+        if (e?.code === "P2002") skipped++;
+        else if (e?.code === "P2003") failed.push({ line: i + 1, reason: "invalid course reference" });
+        else failed.push({ line: i + 1, reason: "create failed" });
+      }
     }
-  }
 
-  await createAuditLog({
-    actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-    action: "BULK_BATCHES_CREATED", entityType: "Batch",
-    newValue: {
-      created,
-      skipped,
-      failedCount: failed.length,
-      applyCourseIdsCount: applyCourseIds.length,
-      applyPackageIdsCount: applyPackageIds.length,
-    },
-  });
-  revalidatePath("/admin/batches");
-  if (created > 0) revalidateTag(CATALOG_TAGS.batches);
-  return { ok: true, data: { created, skipped, failed } };
+    await createAuditLog({
+      actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+      action: "BULK_BATCHES_CREATED", entityType: "Batch",
+      newValue: { created, skipped, failedCount: failed.length, applyCourseIdsCount: applyCourseIds.length },
+    });
+    revalidatePath("/admin/batches");
+    if (created > 0) revalidateTag(CATALOG_TAGS.batches);
+    return { ok: true, data: { created, skipped, failed } };
   });
 }
 
-// ---------- Bulk add courses ----------
+// ============================================================
+// Bulk add courses (name[,description[,status]])
+// ============================================================
+const bulkCoursesArgs = z.object({ text: z.string().min(1).max(MAX_TEXT_LEN) });
 
-const bulkCoursesArgs = z.object({
-  text: z.string().min(1).max(MAX_TEXT_LEN),
-});
-
-/**
- * Accepts FormData with `text` and/or `file`. Dedupe within input by name,
- * pre-check DB and skip existing names. Inserts only new courses.
- */
 export async function bulkAddCoursesFromForm(
   formData: FormData,
 ): Promise<R<{ created: number; skipped: number; failed: { line: number; reason: string }[] }>> {
   return withAdminD(async (admin) => {
+    const text = await readFormText(formData);
+    if (typeof text !== "string") return bad(text.error);
+    if (!text.trim()) return bad("no input provided");
 
-  let text = String(formData.get("text") ?? "");
-  const file = formData.get("file");
-  if (file instanceof File && file.size > 0) {
-    if (file.size > MAX_FILE_BYTES) return { ok: false, error: "file exceeds 5 MB" };
-    const t = await file.text();
-    text = text ? `${text}\n${t}` : t;
-  }
-  if (!text.trim()) return { ok: false, error: "no input provided" };
+    const parsed = bulkCoursesArgs.safeParse({ text });
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
 
-  const parsed = bulkCoursesArgs.safeParse({ text });
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+    const { rows: rawRows, errors } = parseBulkCourses(parsed.data.text);
+    const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
+    let skipped = 0;
 
-  const { rows: rawRows, errors } = parseBulkCourses(parsed.data.text);
-  const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
-  let skipped = 0;
+    const seen = new Set<string>();
+    const rows = rawRows.filter((r) => {
+      if (seen.has(r.name)) { skipped++; return false; }
+      seen.add(r.name);
+      return true;
+    });
 
-  const seen = new Set<string>();
-  const rows: typeof rawRows = [];
-  for (const r of rawRows) {
-    if (seen.has(r.name)) { skipped++; continue; }
-    seen.add(r.name);
-    rows.push(r);
-  }
+    const existing = rows.length
+      ? await prisma.course.findMany({ where: { name: { in: rows.map((r) => r.name) } }, select: { name: true } })
+      : [];
+    const existingNames = new Set(existing.map((c) => c.name));
 
-  const existing = rows.length
-    ? await prisma.course.findMany({
-        where: { name: { in: rows.map((r) => r.name) } },
-        select: { name: true },
-      })
-    : [];
-  const existingNames = new Set(existing.map((c) => c.name));
-
-  let created = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (existingNames.has(row.name)) { skipped++; continue; }
-    try {
-      await prisma.course.create({
-        data: {
-          name: row.name,
-          description: row.description ?? null,
-          status: row.status ?? "active",
-        },
-      });
-      created++;
-    } catch (e: any) {
-      if (e?.code === "P2002") skipped++;
-      else failed.push({ line: i + 1, reason: "create failed" });
+    let created = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (existingNames.has(row.name)) { skipped++; continue; }
+      try {
+        await prisma.course.create({
+          data: { name: row.name, description: row.description ?? null, status: row.status ?? "active" },
+        });
+        created++;
+      } catch (e: any) {
+        if (e?.code === "P2002") skipped++;
+        else failed.push({ line: i + 1, reason: "create failed" });
+      }
     }
-  }
 
-  await createAuditLog({
-    actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-    action: "BULK_COURSES_CREATED", entityType: "Course",
-    newValue: { created, skipped, failedCount: failed.length },
-  });
-  revalidatePath("/admin/courses");
-  if (created > 0) revalidateTag(CATALOG_TAGS.courses);
-  return { ok: true, data: { created, skipped, failed } };
+    await createAuditLog({
+      actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+      action: "BULK_COURSES_CREATED", entityType: "Course",
+      newValue: { created, skipped, failedCount: failed.length },
+    });
+    revalidatePath("/admin/courses");
+    if (created > 0) revalidateTag(CATALOG_TAGS.courses);
+    return { ok: true, data: { created, skipped, failed } };
   });
 }
 
-/**
- * Generic bulk action over a set of selected students. Used by /admin/search.
- * Each branch is one transaction-bounded operation per student; we report counts.
- */
+// ============================================================
+// Generic bulk action over selected students (admin search page)
+// ============================================================
 export async function bulkAction(
   input: unknown,
 ): Promise<R<{ count: number; skipped: { studentId: string; reason: string }[] }>> {
   return withAdminD(async (admin) => {
-  const parsed = bulkActionSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-  const data = parsed.data;
-  const skipped: { studentId: string; reason: string }[] = [];
-  let count = 0;
-  let auditAction: AuditAction = "BULK_COURSE_REVOKED";
+    const parsed = bulkActionSchema.safeParse(input);
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
+    const data = parsed.data;
+    const skipped: { studentId: string; reason: string }[] = [];
+    let count = 0;
+    let auditAction: AuditAction = "BULK_STUDENTS_ADDED_TO_BATCH";
 
-  if (data.action === "revoke_course") {
-    const r = await prisma.studentCourse.deleteMany({
-      where: { studentId: { in: data.studentIds }, courseId: data.courseId },
-    });
-    count = r.count;
-    auditAction = "BULK_COURSE_REVOKED";
-  } else if (data.action === "revoke_package") {
-    const r = await prisma.studentPackage.deleteMany({
-      where: { studentId: { in: data.studentIds }, packageId: data.packageId },
-    });
-    count = r.count;
-    auditAction = "BULK_PACKAGE_REVOKED";
-  } else if (data.action === "deny_course") {
-    for (const sid of data.studentIds) {
-      try {
-        await prisma.studentCourseDenial.upsert({
-          where: { studentId_courseId: { studentId: sid, courseId: data.courseId } },
-          create: { studentId: sid, courseId: data.courseId, reason: data.reason ?? null },
-          update: { reason: data.reason ?? null },
-        });
-        count++;
-      } catch (e: any) {
-        skipped.push({
-          studentId: sid,
-          reason: e?.code === "P2003" ? "missing student/course" : "deny failed",
-        });
-      }
+    if (data.action === "add_to_batch") {
+      const r = await prisma.studentBatch.createMany({
+        data: data.studentIds.map((studentId) => ({ studentId, batchId: data.batchId })),
+        skipDuplicates: true,
+      });
+      count = r.count;
+      auditAction = "BULK_STUDENTS_ADDED_TO_BATCH";
+    } else if (data.action === "remove_from_batch") {
+      const r = await prisma.studentBatch.deleteMany({
+        where: { studentId: { in: data.studentIds }, batchId: data.batchId },
+      });
+      count = r.count;
+      auditAction = "BULK_STUDENTS_REMOVED_FROM_BATCH";
+    } else if (data.action === "block") {
+      const r = await prisma.student.updateMany({ where: { id: { in: data.studentIds } }, data: { status: "blocked" } });
+      count = r.count;
+      auditAction = "BULK_STUDENTS_BLOCKED";
+    } else if (data.action === "activate") {
+      const r = await prisma.student.updateMany({ where: { id: { in: data.studentIds } }, data: { status: "active" } });
+      count = r.count;
+      auditAction = "BULK_STUDENTS_ACTIVATED";
+    } else if (data.action === "set_end_date") {
+      const r = await prisma.student.updateMany({
+        where: { id: { in: data.studentIds } },
+        data: { accessEndDate: data.endDate },
+      });
+      count = r.count;
+      auditAction = "BULK_STUDENTS_END_DATE_CHANGED";
     }
-    auditAction = "BULK_COURSE_DENIED";
-  } else if (data.action === "undeny_course") {
-    const r = await prisma.studentCourseDenial.deleteMany({
-      where: { studentId: { in: data.studentIds }, courseId: data.courseId },
-    });
-    count = r.count;
-    auditAction = "BULK_COURSE_DENIAL_REMOVED";
-  } else if (data.action === "block") {
-    const r = await prisma.student.updateMany({
-      where: { id: { in: data.studentIds } },
-      data: { status: "blocked" },
-    });
-    count = r.count;
-    auditAction = "BULK_STUDENTS_BLOCKED";
-  } else if (data.action === "activate") {
-    const r = await prisma.student.updateMany({
-      where: { id: { in: data.studentIds } },
-      data: { status: "active" },
-    });
-    count = r.count;
-    auditAction = "BULK_STUDENTS_ACTIVATED";
-  } else if (data.action === "set_end_date") {
-    const r = await prisma.student.updateMany({
-      where: { id: { in: data.studentIds } },
-      data: { accessEndDate: data.endDate },
-    });
-    count = r.count;
-    auditAction = "BULK_STUDENTS_END_DATE_CHANGED";
-  }
 
-  await createAuditLog({
-    actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-    action: auditAction, entityType: "Student",
-    newValue: { ...data, count, skippedCount: skipped.length },
-  });
-  revalidatePath("/admin/search");
-  revalidatePath("/admin/students");
-  return { ok: true, data: { count, skipped } };
+    await createAuditLog({
+      actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+      action: auditAction, entityType: "Student",
+      newValue: { ...data, count, skippedCount: skipped.length },
+    });
+    revalidatePath("/admin/search");
+    revalidatePath("/admin/students");
+    return { ok: true, data: { count, skipped } };
   });
 }
 
@@ -672,34 +505,29 @@ export async function resolveStudentIdentifiers(
   text: string,
 ): Promise<R<{ studentIds: string[]; unknown: string[] }>> {
   return withAdminD(async () => {
-  if (typeof text !== "string" || !text.trim()) return bad("no input");
-  const idents = parseIdentifierList(text);
-  if (idents.length === 0) return { ok: true, data: { studentIds: [], unknown: [] } };
-  const matches = await prisma.student.findMany({
-    where: {
-      OR: [
+    if (typeof text !== "string" || !text.trim()) return bad("no input");
+    const idents = parseIdentifierList(text);
+    if (idents.length === 0) return { ok: true, data: { studentIds: [], unknown: [] } };
+    const matches = await prisma.student.findMany({
+      where: { OR: [
         { studentCode: { in: idents } },
         { email: { in: idents.map((i) => i.toLowerCase()) } },
-      ],
-    },
-    select: { id: true, studentCode: true, email: true },
-  });
-  const byKey = new Map<string, string>();
-  for (const s of matches) {
-    byKey.set(s.studentCode, s.id);
-    byKey.set(s.email.toLowerCase(), s.id);
-  }
-  const seen = new Set<string>();
-  const studentIds: string[] = [];
-  const unknown: string[] = [];
-  for (const ident of idents) {
-    const id = byKey.get(ident) ?? byKey.get(ident.toLowerCase());
-    if (!id) unknown.push(ident);
-    else if (!seen.has(id)) {
-      seen.add(id);
-      studentIds.push(id);
+      ] },
+      select: { id: true, studentCode: true, email: true },
+    });
+    const byKey = new Map<string, string>();
+    for (const s of matches) {
+      byKey.set(s.studentCode, s.id);
+      byKey.set(s.email.toLowerCase(), s.id);
     }
-  }
-  return { ok: true, data: { studentIds, unknown } };
+    const seen = new Set<string>();
+    const studentIds: string[] = [];
+    const unknown: string[] = [];
+    for (const ident of idents) {
+      const id = byKey.get(ident) ?? byKey.get(ident.toLowerCase());
+      if (!id) unknown.push(ident);
+      else if (!seen.has(id)) { seen.add(id); studentIds.push(id); }
+    }
+    return { ok: true, data: { studentIds, unknown } };
   });
 }

@@ -2,7 +2,6 @@ import Link from "next/link";
 import {
   ArrowUpRight,
   Layers3,
-  Package,
   Search,
   Upload,
   UserPlus,
@@ -11,35 +10,14 @@ import {
 } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/authorization";
-import MultiCheckPicker from "@/components/MultiCheckPicker";
 import RowDeleteButton from "@/components/RowDeleteButton";
 import Dropdown from "@/components/Dropdown";
 import Pagination from "@/components/Pagination";
 import StudentAddForm from "@/components/StudentAddForm";
-import {
-  getActiveBatches,
-  getActiveCourses,
-  getActivePackages,
-} from "@/lib/catalog-cache";
-import {
-  getStudentsWithCourseAccess,
-  filterStudentsByCoursePath,
-  type CoursePathFilter,
-} from "@/lib/course-access";
+import { getActiveBatches, getActiveCourses } from "@/lib/catalog-cache";
+import { getStudentsWithCourseAccess } from "@/lib/course-access";
 
 const PAGE_SIZE = 10;
-
-const PATH_FILTERS: { value: CoursePathFilter; label: string }[] = [
-  { value: "any", label: "Any path" },
-  { value: "via_direct_course", label: "Via direct course" },
-  { value: "via_direct_package", label: "Via direct package" },
-  { value: "via_batch_course", label: "Via batch course" },
-  { value: "via_batch_package", label: "Via batch package" },
-  { value: "not_via_direct_package", label: "NOT via any direct package" },
-  { value: "not_via_any_package", label: "NOT via any package" },
-  { value: "only_direct_course", label: "Only via direct course" },
-  { value: "only_via_batch", label: "Only via batch" },
-];
 
 export default async function StudentsPage({
   searchParams,
@@ -49,7 +27,6 @@ export default async function StudentsPage({
     status?: string;
     batchId?: string;
     courseId?: string;
-    pathFilter?: string;
     expired?: string;
     page?: string;
   }>;
@@ -67,18 +44,14 @@ export default async function StudentsPage({
     ];
   }
   if (sp.status === "active" || sp.status === "blocked") where.status = sp.status;
-  if (sp.batchId) where.batchId = sp.batchId;
+  if (sp.batchId) where.studentBatches = { some: { batchId: sp.batchId } };
   const now = new Date();
   if (sp.expired === "yes") where.accessEndDate = { lt: now };
   if (sp.expired === "no")
     where.AND = [{ accessEndDate: { gte: now } }, { accessStartDate: { lte: now } }];
 
   if (sp.courseId) {
-    let ids = await getStudentsWithCourseAccess(sp.courseId);
-    const pathFilter = (sp.pathFilter as CoursePathFilter | undefined) ?? "any";
-    if (pathFilter !== "any" && ids.length > 0) {
-      ids = await filterStudentsByCoursePath(ids, sp.courseId, pathFilter);
-    }
+    const ids = await getStudentsWithCourseAccess(sp.courseId);
     where.id = { in: ids.length ? ids : ["__none__"] };
   }
 
@@ -87,7 +60,6 @@ export default async function StudentsPage({
     students,
     batches,
     courses,
-    packages,
     totalCount,
     activeCount,
     blockedCount,
@@ -96,14 +68,13 @@ export default async function StudentsPage({
     prisma.student.count({ where }),
     prisma.student.findMany({
       where,
-      include: { batch: true },
+      include: { studentBatches: { include: { batch: true } } },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
     }),
     getActiveBatches(),
     getActiveCourses(),
-    getActivePackages(),
     prisma.student.count(),
     prisma.student.count({ where: { status: "active" } }),
     prisma.student.count({ where: { status: "blocked" } }),
@@ -145,8 +116,6 @@ export default async function StudentsPage({
     { value: "", label: "Any course" },
     ...courses.map((c) => ({ value: c.id, label: c.name })),
   ];
-
-  const pathOptions = PATH_FILTERS.map((p) => ({ value: p.value, label: p.label }));
 
   const formatDate = (d: Date) =>
     d.toISOString().slice(0, 10).split("-").reverse().join("/");
@@ -243,11 +212,6 @@ export default async function StudentsPage({
     });
   if (sp.courseId)
     activeChips.push({ key: "courseId", label: `Course: ${courseLabel(sp.courseId)}` });
-  if (sp.pathFilter && sp.pathFilter !== "any")
-    activeChips.push({
-      key: "pathFilter",
-      label: `Path: ${PATH_FILTERS.find((p) => p.value === sp.pathFilter)?.label ?? sp.pathFilter}`,
-    });
 
   return (
     <div className="wide-canvas students-page">
@@ -259,8 +223,7 @@ export default async function StudentsPage({
           </span>
           <h1>Students</h1>
           <p>
-            Manage learner access across batches, packages, and individual courses. Apply filters
-            below to narrow the roster.
+            Manage learner access through batches. Apply filters below to narrow the roster.
           </p>
         </div>
         <div className="students-hero-stats" role="list" aria-label="Roster segments — click to filter">
@@ -306,13 +269,6 @@ export default async function StudentsPage({
             <small>{batches.length} configured</small>
           </span>
         </Link>
-        <Link href="/admin/packages" className="quick-action" data-tone="blue">
-          <Package size={16} aria-hidden="true" />
-          <span>
-            <strong>Manage packages</strong>
-            <small>{packages.length} active</small>
-          </span>
-        </Link>
       </div>
 
       <form className="filter-bar" method="get" aria-label="Filter students">
@@ -355,18 +311,6 @@ export default async function StudentsPage({
           ariaLabel="Filter by course access"
           minWidth={200}
         />
-        {/* Access-path only means something relative to a course — keep the
-            bar uncluttered until one is picked. */}
-        {sp.courseId ? (
-          <Dropdown
-            name="pathFilter"
-            options={pathOptions}
-            defaultValue={sp.pathFilter ?? "any"}
-            placeholder="Any path"
-            ariaLabel="Filter by access path"
-            minWidth={220}
-          />
-        ) : null}
         <button type="submit" className="filter-submit">
           Apply filters
         </button>
@@ -460,9 +404,13 @@ export default async function StudentsPage({
                     </span>
                   </td>
                   <td>
-                    {s.batch ? (
-                      <span className="batch-chip" title={s.batch.batchName}>
-                        {s.batch.batchCode}
+                    {s.studentBatches.length > 0 ? (
+                      <span className="batch-chips">
+                        {s.studentBatches.map((sb) => (
+                          <span key={sb.batchId} className="batch-chip" title={sb.batch.batchName}>
+                            {sb.batch.batchCode}
+                          </span>
+                        ))}
                       </span>
                     ) : (
                       <span className="cell-muted">—</span>
@@ -519,8 +467,6 @@ export default async function StudentsPage({
 
       <StudentAddForm
         batches={batches}
-        courses={courses}
-        packages={packages}
         defaultStartDate={addFormDefaultStart}
         defaultEndDate={addFormDefaultEnd}
       />

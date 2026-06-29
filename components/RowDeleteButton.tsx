@@ -3,14 +3,12 @@
 import { Trash2 } from "lucide-react";
 import ActionButton from "@/components/ActionButton";
 import { deleteBatch } from "@/actions/batches";
-import { deletePackage } from "@/actions/packages";
 import { deleteStudent } from "@/actions/students";
 
-type Kind = "batch" | "package" | "student";
+type Kind = "batch" | "student";
 
 const ACTIONS: Record<Kind, (id: string) => Promise<{ ok: boolean; error?: string }>> = {
   batch: deleteBatch,
-  package: deletePackage,
   student: deleteStudent,
 };
 

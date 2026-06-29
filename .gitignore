@@ -16,6 +16,8 @@ next-dev.*.log
 
 # Data migration dump — contains real user emails / audit data. Never commit.
 scripts/data-dump.json
+# DB backups (raw table dumps with student PII). Never commit.
+backups/
 
 # Claude Code local config
 .claude

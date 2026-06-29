@@ -1,20 +1,15 @@
 export default function DashboardLoading() {
   return (
-    <div className="sx-shell">
-      <div className="sx-skel-top">
-        <div className="sx-skel sx-skel--brand" />
-        <div className="sx-skel sx-skel--pill" />
-      </div>
-      <div className="sx-skel-page" aria-busy="true">
-        <div className="sx-skel sx-skel--eyebrow" />
-        <div className="sx-skel sx-skel--title-lg" />
-        <div className="sx-skel sx-skel--par" />
-        <div className="sx-skel-grid">
-          <div className="sx-skel sx-skel--tile" />
-          <div className="sx-skel sx-skel--tile" />
-          <div className="sx-skel sx-skel--tile" />
-          <div className="sx-skel sx-skel--tile" />
-        </div>
+    <div className="sx-loading" role="status" aria-live="polite">
+      <div className="sx-loading-card">
+        <span className="sx-loading-mark" aria-hidden="true">
+          S
+        </span>
+        <strong className="sx-loading-title">SkillSpark</strong>
+        <span className="sx-loading-sub">Preparing your dashboard…</span>
+        <span className="sx-loading-bar" aria-hidden="true">
+          <span />
+        </span>
       </div>
     </div>
   );

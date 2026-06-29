@@ -4,6 +4,20 @@ Build a logic-first LMS platform using modern, secure, scalable architecture.
 
 This is Version 1.
 
+> **⚠️ SUPERSEDED — access model changed (V1.1, batch-centric).**
+> The original spec below grants course access through four paths (direct course,
+> direct package, batch course, batch package) plus per-student denials. That has
+> been **replaced** by a single batch-centric model and is the source of truth in
+> `CLAUDE.md`:
+> - Access = a student is in one or more **batches** (`StudentBatch`, many-to-many);
+>   each batch has courses (`BatchCourse`); access is the **union** of those courses.
+> - **Removed entirely:** packages (`Package`/`PackageCourse`/`StudentPackage`/
+>   `BatchPackage`), direct per-student enrollment (`StudentCourse`), and per-student
+>   denials (`StudentCourseDenial`). Courses are assigned to a batch progressively so
+>   students never get future videos early.
+> - Production runs on **PostgreSQL** (not SQLite).
+> Treat the package / direct-enrollment / denial sections below as historical.
+
 VERY IMPORTANT:
 Do NOT focus on design, styling, animations, colors, layout polish, responsive perfection, dashboard beauty, landing page, marketing page, icons, charts, or UI components.
 

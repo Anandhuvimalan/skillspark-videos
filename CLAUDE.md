@@ -7,9 +7,9 @@ A logic-first Learning Management System. **This is V1.** The mission is correct
 1. **No styling work.** Plain HTML elements only — `<form>`, `<input>`, `<table>`, `<button>`, `<a>`. No Tailwind, no CSS frameworks, no animations, no icons. Browser default styling is the goal.
 2. **Authorization is server-side, every time.** Never trust the client. Every server action and route handler that touches data calls a helper from `lib/authorization.ts` first.
 3. **Object-level access.** A student visiting `/courses/5` must pass `canAccessCourse(studentId, 5)`. URL-guessing must return 403/404, not data.
-4. **Don't duplicate courses.** One `Course` row per real course (e.g., one "Excel"). Access is granted via four paths: direct course, direct package, batch course, batch package. `getAccessibleCourses` deduplicates.
-5. **Course denial is a hard block.** A `StudentCourseDenial` row hides one course from one student no matter how many grant paths exist. `canAccessCourse` checks the denial table first; admins use it to remove a single course from someone who got it via a package or batch without removing the package/batch itself.
-6. **Audit important mutations.** Every admin write that matters (CRUD on students/batches/packages/courses/modules/videos/notes/enrollments/denials, plus auth denials) calls `createAuditLog`. See `idea.md` §18 for the full action list — and the new `STUDENT_COURSE_DENIED`, `BULK_*` actions in `lib/audit-log.ts`.
+4. **Don't duplicate courses.** One `Course` row per real course (e.g., one "Excel"). Access is granted through exactly **one** path: a student is in one or more batches (`StudentBatch`), and each batch has courses (`BatchCourse`). `getAccessibleCourses` returns the union, deduplicated. (Packages, direct per-student enrollment, and per-student denials were removed — see "Access model".)
+5. **Batch is the only access path.** Courses are assigned to a *batch* progressively as classes happen — never to a student directly, and never as an all-at-once "package" (which would leak future videos early). Add a student to a batch to grant access; remove them to revoke.
+6. **Audit important mutations.** Every admin write that matters (CRUD on students/batches/courses/modules/videos/notes, batch-course + student-batch assignment, plus auth denials) calls `createAuditLog`. Key actions: `STUDENT_BATCH_ASSIGNED/REMOVED`, `BATCH_COURSE_ASSIGNED/REMOVED`, `BULK_*` in `lib/audit-log.ts`.
 7. **Video security is honest.** Browser-playable video can always be screen-captured. Goal is access control + no overt download button — not DRM. Architecture stays pluggable so we can swap Drive for Vimeo/Mux/signed URLs later.
 8. **Drive ID is canonical.** Admins paste any Drive URL shape; `lib/drive.ts > parseDriveFileId` extracts the bare ID and that's all the DB stores. Render code derives embed/download URLs via `buildDriveEmbedUrl` / `buildDriveDownloadUrl`. Never store full URLs.
 9. **Video duration is auto-fetched.** `lib/drive.ts > fetchDriveVideoMetadata` calls the Drive API (`GOOGLE_DRIVE_API_KEY`) and patches `Video.duration`. Files must be shared "anyone with link". Fire-and-forget; never blocks save.
@@ -17,7 +17,7 @@ A logic-first Learning Management System. **This is V1.** The mission is correct
 ## Stack
 
 - Next.js 15 (App Router) + TypeScript
-- Prisma + SQLite (`file:./dev.db`)
+- Prisma + PostgreSQL (production runs on Postgres; `DATABASE_URL`)
 - NextAuth v5 (Auth.js) with Google OAuth — Prisma adapter
 - Zod for input validation
 - Server Actions for mutations
@@ -37,17 +37,18 @@ Business logic stays in `lib/`. Server Actions in `actions/` are thin: validate 
 
 ## Access model (the core invariant)
 
-A student can access a course if **all** of the following hold:
+Batch-centric. A student can access a course if **all** of the following hold:
 
-- No `StudentCourseDenial` row exists for `(studentId, courseId)`. (denial wins, always)
-- AND **any** of the following four grant paths is true:
-  1. `student_courses` has `(studentId, courseId)` — direct course
-  2. `student_packages` has `(studentId, packageId)` AND `package_courses` has `(packageId, courseId)` — direct package
-  3. Student's `batchId` is in `batch_courses` for `courseId` — batch course
-  4. Student's `batchId` is in `batch_packages` for some `packageId` AND that package contains `courseId` — batch package
-- AND student is `active`, `accessStartDate <= now <= accessEndDate`, course is `active`. Module/video access inherits from course access (and the entity's own `active` status).
+- Some batch the student belongs to (`StudentBatch`) has that course assigned
+  (`BatchCourse`). A student may be in **multiple** batches; access is the union.
+- AND student is `active`, `accessStartDate <= now <= accessEndDate`, course is `active`.
+  Module/video access inherits from course access (and the entity's own `active` status).
 
-`getStudentsWithCourseAccess(courseId)` is the inverse and must include all four paths. Admin search relies on it.
+`canAccessCourse` resolves this in one query:
+`batchCourse.findFirst({ where: { courseId, batch: { studentBatches: { some: { studentId } } } } })`.
+`getStudentsWithCourseAccess(courseId)` is the inverse (batches with the course →
+their students). There are **no** packages, direct per-student enrollments, or
+per-student denials anymore — those models were dropped.
 
 ## Auth flow
 
@@ -62,16 +63,22 @@ Google OAuth → callback receives email → resolve as `Admin` (active) **or** 
 - Don't mass-assign Prisma `data: req.body` — pick fields explicitly.
 - Don't `cascade` delete on things with audit history; prefer status flags.
 
-## Build order
+## Admin workflow
 
-Follow `idea.md` §22. Schema → auth → authz helpers → admin CRUD (batches → students → courses → packages → mappings → enrollment) → access functions → student dashboard → modules/videos/notes → progress → search/bulk → audit logs → tests.
+1. Create courses (and their modules/videos).
+2. Create a **batch** (a cohort/class) and assign it courses — add more courses
+   later as classes progress.
+3. Add students to the batch. Two bulk tools on `/admin/bulk`: (a) "add students
+   to a batch" (paste `name,email[,studentCode]`), and (b) "full bootstrap"
+   (`studentCode,name,email,batchCode,courseNames`, auto-creating batches +
+   assigning courses). Search page does bulk add/remove-from-batch on existing students.
 
 ## Setup
 
 ```bash
-cp .env.example .env   # fill AUTH_GOOGLE_ID/SECRET, AUTH_SECRET
+cp .env.example .env   # fill DATABASE_URL, AUTH_GOOGLE_ID/SECRET, AUTH_SECRET
 npm install
-npm run db:push        # creates SQLite schema
-npm run db:seed        # seeds admin + sample courses/students
+npm run db:push        # syncs the Postgres schema
+npm run db:seed        # seeds admin + sample batches/courses/students
 npm run dev
 ```

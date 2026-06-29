@@ -23,7 +23,6 @@ export type KpiSnapshot = {
     blockedStudents: number;
     expiredStudents: number;
     batches: number;
-    packages: number;
     courses: number;
     modules: number;
     videos: number;
@@ -51,7 +50,6 @@ export async function getKpiSnapshot(): Promise<KpiSnapshot> {
     blockedStudents,
     expiredStudents,
     batches,
-    packages,
     courses,
     modules,
     videos,
@@ -72,7 +70,6 @@ export async function getKpiSnapshot(): Promise<KpiSnapshot> {
       },
     }),
     prisma.batch.count(),
-    prisma.package.count(),
     prisma.course.count(),
     prisma.module.count(),
     prisma.video.count(),
@@ -119,7 +116,6 @@ export async function getKpiSnapshot(): Promise<KpiSnapshot> {
       blockedStudents,
       expiredStudents,
       batches,
-      packages,
       courses,
       modules,
       videos,

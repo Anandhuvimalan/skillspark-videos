@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { canAccessCourse } from "@/lib/course-access";
@@ -19,7 +20,12 @@ export type SessionUser = {
   studentId?: string;
 };
 
-export async function getCurrentSessionUser(): Promise<SessionUser | null> {
+/**
+ * Resolve the session user. Wrapped in React `cache()` so the multiple callers
+ * within a single server render (admin layout + page, requireStudent + access
+ * checks, etc.) share ONE `auth()` cookie verification instead of repeating it.
+ */
+export const getCurrentSessionUser = cache(async (): Promise<SessionUser | null> => {
   const session = await auth();
   if (!session?.user?.email || !session.user.role) return null;
   return {
@@ -29,7 +35,7 @@ export async function getCurrentSessionUser(): Promise<SessionUser | null> {
     adminId: session.user.adminId,
     studentId: session.user.studentId,
   };
-}
+});
 
 export async function requireAdmin() {
   const user = await getCurrentSessionUser();
@@ -133,47 +139,6 @@ export async function canAccessVideo(studentId: string, videoId: string): Promis
     return canAccessCourse(studentId, v.module.courseId);
   }
   return false;
-}
-
-export async function canAccessPackage(studentId: string, packageId: string): Promise<boolean> {
-  const pkg = await prisma.package.findUnique({
-    where: { id: packageId },
-    select: { status: true },
-  });
-  if (!pkg || pkg.status !== "active") return false;
-
-  // Direct package assignment.
-  const direct = await prisma.studentPackage.findUnique({
-    where: { studentId_packageId: { studentId, packageId } },
-    select: { id: true },
-  });
-  if (direct) return true;
-
-  // Inherited via batch assignment.
-  const student = await prisma.student.findUnique({
-    where: { id: studentId },
-    select: { batchId: true },
-  });
-  if (!student?.batchId) return false;
-  const batchPkg = await prisma.batchPackage.findUnique({
-    where: { batchId_packageId: { batchId: student.batchId, packageId } },
-    select: { id: true },
-  });
-  return !!batchPkg;
-}
-
-export async function requirePackageAccess(studentId: string, packageId: string) {
-  const ok = await canAccessPackage(studentId, packageId);
-  if (!ok) {
-    await createAuditLog({
-      actorId: studentId,
-      actorType: "student",
-      action: "UNAUTHORIZED_COURSE_ACCESS_ATTEMPT",
-      entityType: "Package",
-      entityId: packageId,
-    });
-    throw new AuthError("Package access denied", 403);
-  }
 }
 
 export async function canAccessNote(studentId: string, noteId: string): Promise<boolean> {

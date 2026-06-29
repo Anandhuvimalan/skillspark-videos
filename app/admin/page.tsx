@@ -6,7 +6,6 @@ import {
   Clock,
   GraduationCap,
   Layers3,
-  Package,
   PlayCircle,
   ScrollText,
   StickyNote,
@@ -105,7 +104,6 @@ export default async function AdminHome() {
       <section className="catalog-band" aria-label="Catalog totals">
         <CatalogStat icon={Users} label="Students" value={kpi.totals.students} tone="blue" />
         <CatalogStat icon={Layers3} label="Batches" value={kpi.totals.batches} tone="cyan" />
-        <CatalogStat icon={Package} label="Packages" value={kpi.totals.packages} tone="purple" />
         <CatalogStat icon={BookOpen} label="Courses" value={kpi.totals.courses} tone="green" />
         <CatalogStat icon={ClipboardList} label="Modules" value={kpi.totals.modules} tone="orange" />
         <CatalogStat icon={PlayCircle} label="Videos" value={kpi.totals.videos} tone="rose" />
@@ -266,7 +264,6 @@ export default async function AdminHome() {
                 { label: "Modules", value: kpi.totals.modules },
                 { label: "Videos", value: kpi.totals.videos },
                 { label: "Notes", value: kpi.totals.notes },
-                { label: "Packages", value: kpi.totals.packages },
                 { label: "Batches", value: kpi.totals.batches },
               ]}
             />

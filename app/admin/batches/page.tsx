@@ -8,20 +8,16 @@ import RowDeleteButton from "@/components/RowDeleteButton";
 
 export default async function BatchesPage() {
   await requireAdmin();
-  const [batches, courses, packages] = await Promise.all([
+  const [batches, courses] = await Promise.all([
     prisma.batch.findMany({
       orderBy: { batchCode: "asc" },
       include: {
         _count: {
-          select: { students: true, batchCourses: true, batchPackages: true },
+          select: { studentBatches: true, batchCourses: true },
         },
       },
     }),
     prisma.course.findMany({
-      where: { status: "active" },
-      orderBy: { name: "asc" },
-    }),
-    prisma.package.findMany({
       where: { status: "active" },
       orderBy: { name: "asc" },
     }),
@@ -45,12 +41,12 @@ export default async function BatchesPage() {
               batchName: fd.get("batchName"),
               description: fd.get("description") || "",
               courseIds: fd.getAll("courseIds"),
-              packageIds: fd.getAll("packageIds"),
             });
           }}
         >
           <p style={{ color: "var(--muted)", fontWeight: "500", marginBottom: "16px" }}>
-            Pick courses and/or packages to assign to all students enrolled in this batch.
+            Pick the courses to assign to everyone in this batch. You can add more
+            courses later from the batch page as classes progress.
           </p>
           <div className="form-grid">
             <div className="form-field-group">
@@ -72,20 +68,12 @@ export default async function BatchesPage() {
               </label>
             </div>
           </div>
-          <div className="pickers-grid">
-            <MultiCheckPicker
-              name="courseIds"
-              legend="Courses (assigned to batch)"
-              items={courses.map((c) => ({ id: c.id, label: c.name }))}
-              placeholder="Search courses…"
-            />
-            <MultiCheckPicker
-              name="packageIds"
-              legend="Packages (assigned to batch)"
-              items={packages.map((p) => ({ id: p.id, label: p.name }))}
-              placeholder="Search packages…"
-            />
-          </div>
+          <MultiCheckPicker
+            name="courseIds"
+            legend="Courses (assigned to batch)"
+            items={courses.map((c) => ({ id: c.id, label: c.name }))}
+            placeholder="Search courses…"
+          />
           <div className="form-actions">
             <button type="submit">Create batch</button>
           </div>
@@ -101,7 +89,6 @@ export default async function BatchesPage() {
               <th>Name</th>
               <th>Students</th>
               <th>Courses</th>
-              <th>Packages</th>
               <th aria-label="Actions"></th>
             </tr>
           </thead>
@@ -110,9 +97,8 @@ export default async function BatchesPage() {
               <tr key={b.id}>
                 <td>{b.batchCode}</td>
                 <td>{b.batchName}</td>
-                <td>{b._count.students}</td>
+                <td>{b._count.studentBatches}</td>
                 <td>{b._count.batchCourses}</td>
-                <td>{b._count.batchPackages}</td>
                 <td className="row-actions">
                   <Link className="row-btn" href={`/admin/batches/${b.id}`}>Open</Link>
                   <RowDeleteButton kind="batch" id={b.id} label={b.batchCode} />

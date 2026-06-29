@@ -2,201 +2,177 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { createAuditLog, type AuditAction } from "@/lib/audit-log";
-import { idSchema } from "@/lib/validations";
+import { createAuditLog } from "@/lib/audit-log";
+import { idSchema, batchCoursesSchema, studentBatchesSchema } from "@/lib/validations";
 import { bad, withAdmin, type R } from "./_shared";
-import type { Admin } from "@prisma/client";
 
 /**
- * The eight enrollment actions all share the same shape: validate two IDs,
- * call a Prisma create/delete, audit, revalidate. Extract the shape to keep
- * each named action a one-liner.
+ * Batch is the only access path now: a batch has courses (`BatchCourse`) and
+ * students (`StudentBatch`); a student can watch the union of their batches'
+ * courses. These actions manage those two mappings.
  */
-type AssignSpec = {
-  primaryId: string;
-  secondaryId: string;
-  assignAuditAction: AuditAction;
-  primaryEntity: "Student" | "Batch";
-  secondaryKey: "courseId" | "packageId";
-  notFoundMsg: string;
-  revalidatePaths: string[];
-  create: () => Promise<unknown>;
-};
-
-async function doAssign(admin: Admin, spec: AssignSpec): Promise<R> {
-  if (!idSchema.safeParse(spec.primaryId).success || !idSchema.safeParse(spec.secondaryId).success)
-    return bad("invalid id");
-  try {
-    await spec.create();
-    await createAuditLog({
-      actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-      action: spec.assignAuditAction,
-      entityType: spec.primaryEntity, entityId: spec.primaryId,
-      newValue: { [spec.secondaryKey]: spec.secondaryId },
-    });
-    for (const p of spec.revalidatePaths) revalidatePath(p);
-    return { ok: true };
-  } catch (e: any) {
-    if (e?.code === "P2002") return bad("already assigned");
-    if (e?.code === "P2003") return bad(spec.notFoundMsg);
-    return bad("assign failed");
-  }
-}
-
-type RemoveSpec = {
-  primaryId: string;
-  secondaryId: string;
-  removeAuditAction: AuditAction;
-  primaryEntity: "Student" | "Batch";
-  secondaryKey: "courseId" | "packageId";
-  revalidatePaths: string[];
-  remove: () => Promise<unknown>;
-};
-
-async function doRemove(admin: Admin, spec: RemoveSpec): Promise<R> {
-  if (!idSchema.safeParse(spec.primaryId).success || !idSchema.safeParse(spec.secondaryId).success)
-    return bad("invalid id");
-  await spec.remove();
-  await createAuditLog({
-    actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-    action: spec.removeAuditAction,
-    entityType: spec.primaryEntity, entityId: spec.primaryId,
-    oldValue: { [spec.secondaryKey]: spec.secondaryId },
-  });
-  for (const p of spec.revalidatePaths) revalidatePath(p);
-  return { ok: true };
-}
-
-// ---------- Student ↔ Course ----------
-export async function assignCourseToStudent(studentId: string, courseId: string): Promise<R> {
-  return withAdmin((admin) => doAssign(admin, {
-    primaryId: studentId, secondaryId: courseId,
-    assignAuditAction: "STUDENT_COURSE_ASSIGNED",
-    primaryEntity: "Student", secondaryKey: "courseId",
-    notFoundMsg: "student or course not found",
-    revalidatePaths: [`/admin/students/${studentId}`, "/admin/enrollments"],
-    create: () => prisma.studentCourse.create({ data: { studentId, courseId } }),
-  }));
-}
-
-export async function removeCourseFromStudent(studentId: string, courseId: string): Promise<R> {
-  return withAdmin((admin) => doRemove(admin, {
-    primaryId: studentId, secondaryId: courseId,
-    removeAuditAction: "STUDENT_COURSE_REMOVED",
-    primaryEntity: "Student", secondaryKey: "courseId",
-    revalidatePaths: [`/admin/students/${studentId}`],
-    remove: () => prisma.studentCourse.deleteMany({ where: { studentId, courseId } }),
-  }));
-}
-
-// ---------- Student ↔ Package ----------
-export async function assignPackageToStudent(studentId: string, packageId: string): Promise<R> {
-  return withAdmin((admin) => doAssign(admin, {
-    primaryId: studentId, secondaryId: packageId,
-    assignAuditAction: "STUDENT_PACKAGE_ASSIGNED",
-    primaryEntity: "Student", secondaryKey: "packageId",
-    notFoundMsg: "student or package not found",
-    revalidatePaths: [`/admin/students/${studentId}`],
-    create: () => prisma.studentPackage.create({ data: { studentId, packageId } }),
-  }));
-}
-
-export async function removePackageFromStudent(studentId: string, packageId: string): Promise<R> {
-  return withAdmin((admin) => doRemove(admin, {
-    primaryId: studentId, secondaryId: packageId,
-    removeAuditAction: "STUDENT_PACKAGE_REMOVED",
-    primaryEntity: "Student", secondaryKey: "packageId",
-    revalidatePaths: [`/admin/students/${studentId}`],
-    remove: () => prisma.studentPackage.deleteMany({ where: { studentId, packageId } }),
-  }));
-}
 
 // ---------- Batch ↔ Course ----------
 export async function assignCourseToBatch(batchId: string, courseId: string): Promise<R> {
-  return withAdmin((admin) => doAssign(admin, {
-    primaryId: batchId, secondaryId: courseId,
-    assignAuditAction: "BATCH_COURSE_ASSIGNED",
-    primaryEntity: "Batch", secondaryKey: "courseId",
-    notFoundMsg: "batch or course not found",
-    revalidatePaths: [`/admin/batches/${batchId}`],
-    create: () => prisma.batchCourse.create({ data: { batchId, courseId } }),
-  }));
-}
-
-export async function removeCourseFromBatch(batchId: string, courseId: string): Promise<R> {
-  return withAdmin((admin) => doRemove(admin, {
-    primaryId: batchId, secondaryId: courseId,
-    removeAuditAction: "BATCH_COURSE_REMOVED",
-    primaryEntity: "Batch", secondaryKey: "courseId",
-    revalidatePaths: [`/admin/batches/${batchId}`],
-    remove: () => prisma.batchCourse.deleteMany({ where: { batchId, courseId } }),
-  }));
-}
-
-// ---------- Batch ↔ Package ----------
-export async function assignPackageToBatch(batchId: string, packageId: string): Promise<R> {
-  return withAdmin((admin) => doAssign(admin, {
-    primaryId: batchId, secondaryId: packageId,
-    assignAuditAction: "BATCH_PACKAGE_ASSIGNED",
-    primaryEntity: "Batch", secondaryKey: "packageId",
-    notFoundMsg: "batch or package not found",
-    revalidatePaths: [`/admin/batches/${batchId}`],
-    create: () => prisma.batchPackage.create({ data: { batchId, packageId } }),
-  }));
-}
-
-export async function removePackageFromBatch(batchId: string, packageId: string): Promise<R> {
-  return withAdmin((admin) => doRemove(admin, {
-    primaryId: batchId, secondaryId: packageId,
-    removeAuditAction: "BATCH_PACKAGE_REMOVED",
-    primaryEntity: "Batch", secondaryKey: "packageId",
-    revalidatePaths: [`/admin/batches/${batchId}`],
-    remove: () => prisma.batchPackage.deleteMany({ where: { batchId, packageId } }),
-  }));
-}
-
-// ---------- Course denial (per-student hard block) ----------
-export async function denyCourseForStudent(
-  studentId: string,
-  courseId: string,
-  reason?: string,
-): Promise<R> {
   return withAdmin(async (admin) => {
-    if (!idSchema.safeParse(studentId).success || !idSchema.safeParse(courseId).success)
+    if (!idSchema.safeParse(batchId).success || !idSchema.safeParse(courseId).success)
       return bad("invalid id");
     try {
-      await prisma.studentCourseDenial.upsert({
-        where: { studentId_courseId: { studentId, courseId } },
-        create: { studentId, courseId, reason: reason?.trim() || null },
-        update: { reason: reason?.trim() || null },
-      });
+      await prisma.batchCourse.create({ data: { batchId, courseId } });
       await createAuditLog({
         actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-        action: "STUDENT_COURSE_DENIED", entityType: "Student", entityId: studentId,
-        newValue: { courseId, reason: reason ?? null },
+        action: "BATCH_COURSE_ASSIGNED", entityType: "Batch", entityId: batchId,
+        newValue: { courseId },
       });
-      revalidatePath(`/admin/students/${studentId}`);
+      revalidatePath(`/admin/batches/${batchId}`);
       return { ok: true };
     } catch (e: any) {
-      if (e?.code === "P2003") return bad("student or course not found");
-      return bad("deny failed");
+      if (e?.code === "P2002") return bad("already assigned");
+      if (e?.code === "P2003") return bad("batch or course not found");
+      return bad("assign failed");
     }
   });
 }
 
-export async function undenyCourseForStudent(
-  studentId: string,
-  courseId: string,
-): Promise<R> {
+export async function removeCourseFromBatch(batchId: string, courseId: string): Promise<R> {
   return withAdmin(async (admin) => {
-    if (!idSchema.safeParse(studentId).success || !idSchema.safeParse(courseId).success)
+    if (!idSchema.safeParse(batchId).success || !idSchema.safeParse(courseId).success)
       return bad("invalid id");
-    await prisma.studentCourseDenial.deleteMany({ where: { studentId, courseId } });
+    await prisma.batchCourse.deleteMany({ where: { batchId, courseId } });
     await createAuditLog({
       actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-      action: "STUDENT_COURSE_DENIAL_REMOVED", entityType: "Student", entityId: studentId,
+      action: "BATCH_COURSE_REMOVED", entityType: "Batch", entityId: batchId,
       oldValue: { courseId },
     });
+    revalidatePath(`/admin/batches/${batchId}`);
+    return { ok: true };
+  });
+}
+
+// ---------- Student ↔ Batch ----------
+export async function addStudentToBatch(studentId: string, batchId: string): Promise<R> {
+  return withAdmin(async (admin) => {
+    if (!idSchema.safeParse(studentId).success || !idSchema.safeParse(batchId).success)
+      return bad("invalid id");
+    try {
+      await prisma.studentBatch.create({ data: { studentId, batchId } });
+      await createAuditLog({
+        actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+        action: "STUDENT_BATCH_ASSIGNED", entityType: "Student", entityId: studentId,
+        newValue: { batchId },
+      });
+      revalidatePath(`/admin/students/${studentId}`);
+      revalidatePath(`/admin/batches/${batchId}`);
+      return { ok: true };
+    } catch (e: any) {
+      if (e?.code === "P2002") return bad("already in batch");
+      if (e?.code === "P2003") return bad("student or batch not found");
+      return bad("add failed");
+    }
+  });
+}
+
+export async function removeStudentFromBatch(studentId: string, batchId: string): Promise<R> {
+  return withAdmin(async (admin) => {
+    if (!idSchema.safeParse(studentId).success || !idSchema.safeParse(batchId).success)
+      return bad("invalid id");
+    await prisma.studentBatch.deleteMany({ where: { studentId, batchId } });
+    await createAuditLog({
+      actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+      action: "STUDENT_BATCH_REMOVED", entityType: "Student", entityId: studentId,
+      oldValue: { batchId },
+    });
+    revalidatePath(`/admin/students/${studentId}`);
+    revalidatePath(`/admin/batches/${batchId}`);
+    return { ok: true };
+  });
+}
+
+/** Diff: set the exact course list for a batch (used by the batch hub picker). */
+export async function setBatchCourses(input: unknown): Promise<R> {
+  return withAdmin(async (admin) => {
+    const parsed = batchCoursesSchema.safeParse(input);
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
+    const { batchId, courseIds } = parsed.data;
+
+    const current = await prisma.batchCourse.findMany({
+      where: { batchId }, select: { courseId: true },
+    });
+    const have = new Set(current.map((c) => c.courseId));
+    const want = new Set(courseIds);
+    const toAdd = [...want].filter((id) => !have.has(id));
+    const toRemove = [...have].filter((id) => !want.has(id));
+
+    try {
+      await prisma.$transaction([
+        ...(toAdd.length
+          ? [prisma.batchCourse.createMany({
+              data: toAdd.map((courseId) => ({ batchId, courseId })),
+              skipDuplicates: true,
+            })]
+          : []),
+        ...(toRemove.length
+          ? [prisma.batchCourse.deleteMany({ where: { batchId, courseId: { in: toRemove } } })]
+          : []),
+      ]);
+    } catch (e: any) {
+      if (e?.code === "P2003") return bad("invalid batch/course reference");
+      return bad("update failed");
+    }
+
+    if (toAdd.length || toRemove.length) {
+      await createAuditLog({
+        actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+        action: toRemove.length && !toAdd.length ? "BATCH_COURSE_REMOVED" : "BATCH_COURSE_ASSIGNED",
+        entityType: "Batch", entityId: batchId,
+        newValue: { added: toAdd, removed: toRemove },
+      });
+    }
+    revalidatePath(`/admin/batches/${batchId}`);
+    return { ok: true };
+  });
+}
+
+/** Diff: set the exact batch list for a student (used by the student edit page). */
+export async function setStudentBatches(input: unknown): Promise<R> {
+  return withAdmin(async (admin) => {
+    const parsed = studentBatchesSchema.safeParse(input);
+    if (!parsed.success) return bad(parsed.error.issues[0].message);
+    const { studentId, batchIds } = parsed.data;
+
+    const current = await prisma.studentBatch.findMany({
+      where: { studentId }, select: { batchId: true },
+    });
+    const have = new Set(current.map((b) => b.batchId));
+    const want = new Set(batchIds);
+    const toAdd = [...want].filter((id) => !have.has(id));
+    const toRemove = [...have].filter((id) => !want.has(id));
+
+    try {
+      await prisma.$transaction([
+        ...(toAdd.length
+          ? [prisma.studentBatch.createMany({
+              data: toAdd.map((batchId) => ({ studentId, batchId })),
+              skipDuplicates: true,
+            })]
+          : []),
+        ...(toRemove.length
+          ? [prisma.studentBatch.deleteMany({ where: { studentId, batchId: { in: toRemove } } })]
+          : []),
+      ]);
+    } catch (e: any) {
+      if (e?.code === "P2003") return bad("invalid student/batch reference");
+      return bad("update failed");
+    }
+
+    if (toAdd.length || toRemove.length) {
+      await createAuditLog({
+        actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+        action: toRemove.length && !toAdd.length ? "STUDENT_BATCH_REMOVED" : "STUDENT_BATCH_ASSIGNED",
+        entityType: "Student", entityId: studentId,
+        newValue: { added: toAdd, removed: toRemove },
+      });
+    }
     revalidatePath(`/admin/students/${studentId}`);
     return { ok: true };
   });

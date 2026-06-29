@@ -1,62 +1,119 @@
 import { Info } from "lucide-react";
 import { requireAdmin } from "@/lib/authorization";
 import {
+  bulkAddStudentsToBatch,
   bulkAddStudentsFromForm,
   bulkAddBatchesFromForm,
   bulkAddCoursesFromForm,
-  bulkEnrollStudentsFromForm,
 } from "@/actions/bulk";
 import MultiCheckPicker from "@/components/MultiCheckPicker";
 import Dropdown from "@/components/Dropdown";
-import {
-  getActiveBatches,
-  getActiveCourses,
-  getActivePackages,
-} from "@/lib/catalog-cache";
+import { getActiveBatches, getActiveCourses } from "@/lib/catalog-cache";
+
+function isoDate(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
 
 export default async function BulkPage() {
   await requireAdmin();
-  const [batches, courses, packages] = await Promise.all([
-    getActiveBatches(),
-    getActiveCourses(),
-    getActivePackages(),
-  ]);
+  const [batches, courses] = await Promise.all([getActiveBatches(), getActiveCourses()]);
 
   const batchOptions = [
+    { value: "", label: "— pick a batch —" },
+    ...batches.map((b) => ({ value: b.id, label: b.batchCode, hint: b.batchName })),
+  ];
+  const applyBatchOptions = [
     { value: "", label: "— none —" },
     ...batches.map((b) => ({ value: b.id, label: b.batchCode, hint: b.batchName })),
   ];
-  const courseSingleOptions = [
-    { value: "", label: "—" },
-    ...courses.map((c) => ({ value: c.id, label: c.name })),
-  ];
-  const packageSingleOptions = [
-    { value: "", label: "—" },
-    ...packages.map((p) => ({ value: p.id, label: p.name })),
-  ];
+
+  const today = new Date();
+  const end = new Date(today);
+  end.setMonth(end.getMonth() + 6);
 
   return (
     <div className="wide-canvas">
       <h1>Bulk operations</h1>
       <p style={{ color: "var(--muted)", fontWeight: "600", marginBottom: "24px" }}>
-        Existing records matched in the database by their unique key are automatically skipped. Re-uploading the same file is safe and will only append new records.
+        Existing records matched by their unique key are skipped, so re-uploading the same file is
+        safe and only appends what&rsquo;s new.
       </p>
 
-      {/* Bulk Add Students Card */}
+      {/* Flow 1: add students to an existing batch */}
       <div className="add-student-panel">
         <div className="form-card-header">
-          <span>Bulk Add Students</span>
+          <span>Add students to a batch</span>
+        </div>
+        <div className="form-card-body">
+          <ColumnSpec
+            required={["name", "email"]}
+            optional={["studentCode"]}
+            notes={[
+              "Pick the batch first — it already has its courses; students inherit them.",
+              "A bare email per line also works (name is derived from the email).",
+              "studentCode is auto-generated when omitted. Existing students are added to the batch.",
+            ]}
+            example="Alice,alice@example.com"
+          />
+          <form
+            action={async (fd: FormData) => {
+              "use server";
+              const r = await bulkAddStudentsToBatch(fd);
+              if (!r.ok) throw new Error(r.error);
+            }}
+          >
+            <div className="form-grid">
+              <div className="form-field-group">
+                <Dropdown name="batchId" label="Batch" options={batchOptions} placeholder="— pick a batch —" minWidth={240} />
+              </div>
+              <div className="form-field-group">
+                <label>
+                  Access start
+                  <input name="defaultStartDate" type="date" defaultValue={isoDate(today)} required />
+                </label>
+              </div>
+              <div className="form-field-group">
+                <label>
+                  Access end
+                  <input name="defaultEndDate" type="date" defaultValue={isoDate(end)} required />
+                </label>
+              </div>
+            </div>
+            <div className="form-field-group" style={{ marginTop: "16px", marginBottom: "20px" }}>
+              <label>
+                Students (one per line)
+                <textarea name="text" rows={8} placeholder={"Alice,alice@example.com\nbob@example.com"} />
+              </label>
+            </div>
+            <div className="form-field-group">
+              <label>
+                Or upload CSV / TXT
+                <input type="file" name="file" accept=".csv,.txt" />
+              </label>
+            </div>
+            <div className="form-actions">
+              <button type="submit">Add students to batch</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {/* Flow 2: full bootstrap */}
+      <div className="add-student-panel" style={{ marginTop: "32px" }}>
+        <div className="form-card-header">
+          <span>Bulk add students (full bootstrap)</span>
         </div>
         <div className="form-card-body">
           <ColumnSpec
             required={["studentCode", "name", "email"]}
-            optional={["batchCode", "courseNames", "packageNames"]}
+            optional={["batchCode", "courseNames"]}
             notes={[
-              "Multiple courses or packages? Separate names with a + (e.g. Excel+SQL).",
-              "Existing students (matched by email or studentCode) are silently skipped.",
-              "If a row references a batchCode that doesn't exist yet, it's auto-created (batchName = batchCode, no courses/packages attached). Edit later from the Batches page.",
+              "Separate multiple courses with a + (e.g. Excel+SQL).",
+              "An unknown batchCode is auto-created; the named courses are assigned to that batch.",
+              "Courses must already exist (create them in Bulk add courses first).",
+              "Existing students (matched by email or studentCode) are skipped.",
             ]}
-            example="S001,Alice,alice@example.com,ONLB101,Excel+SQL,ADFFA"
+            example="S001,Alice,alice@example.com,ONLB101,Excel+SQL"
           />
           <form
             action={async (fd: FormData) => {
@@ -65,73 +122,43 @@ export default async function BulkPage() {
               if (!r.ok) throw new Error(r.error);
             }}
           >
-            <div className="form-grid">
-              <div className="form-field-group">
-                <label>
-                  CSV / TXT File
-                  <input type="file" name="file" accept=".csv,.txt" />
-                </label>
-              </div>
-            </div>
-
-            <div className="form-field-group" style={{ marginTop: "16px", marginBottom: "20px" }}>
+            <div className="form-field-group" style={{ marginBottom: "20px" }}>
               <label>
-                Or Paste CSV Text (one student record per line)
+                Paste CSV (one student per line)
                 <textarea
                   name="text"
                   rows={8}
                   placeholder={
-                    "# studentCode,name,email,batchCode,courseNames,packageNames\n" +
-                    "S001,Alice,alice@example.com,ONLB101,Excel+SQL,ADFFA\n" +
-                    "S002,Bob,bob@example.com,,Excel,\n"
+                    "# studentCode,name,email,batchCode,courseNames\n" +
+                    "S001,Alice,alice@example.com,ONLB101,Excel+SQL\n" +
+                    "S002,Bob,bob@example.com,ONLB101,Excel\n"
                   }
                 />
               </label>
             </div>
-
+            <div className="form-field-group" style={{ marginBottom: "20px" }}>
+              <label>
+                Or upload CSV / TXT
+                <input type="file" name="file" accept=".csv,.txt" />
+              </label>
+            </div>
             <div className="form-grid">
               <div className="form-field-group">
                 <label>
                   Default Access Start Date
-                  <input name="defaultStartDate" type="date" required />
+                  <input name="defaultStartDate" type="date" defaultValue={isoDate(today)} required />
                 </label>
               </div>
               <div className="form-field-group">
                 <label>
                   Default Access End Date
-                  <input name="defaultEndDate" type="date" required />
+                  <input name="defaultEndDate" type="date" defaultValue={isoDate(end)} required />
                 </label>
               </div>
-            </div>
-
-            <h3 style={{ marginTop: "28px", marginBottom: "12px" }}>Apply parameters to every row (optional)</h3>
-            <div className="form-grid">
               <div className="form-field-group">
-                <Dropdown
-                  name="applyBatchId"
-                  label="Batch Assignment"
-                  options={batchOptions}
-                  placeholder="— none —"
-                  minWidth={240}
-                />
+                <Dropdown name="applyBatchId" label="Also add everyone to batch (optional)" options={applyBatchOptions} placeholder="— none —" minWidth={240} />
               </div>
             </div>
-
-            <div className="pickers-grid" style={{ marginTop: "20px" }}>
-              <MultiCheckPicker
-                name="applyCourseIds"
-                legend="Courses to assign to every uploaded student"
-                items={courses.map((c) => ({ id: c.id, label: c.name }))}
-                placeholder="Search courses…"
-              />
-              <MultiCheckPicker
-                name="applyPackageIds"
-                legend="Packages to assign to every uploaded student"
-                items={packages.map((p) => ({ id: p.id, label: p.name }))}
-                placeholder="Search packages…"
-              />
-            </div>
-
             <div className="form-actions">
               <button type="submit">Create students</button>
             </div>
@@ -139,20 +166,20 @@ export default async function BulkPage() {
         </div>
       </div>
 
-      {/* Bulk Add Batches Card */}
+      {/* Bulk Add Batches */}
       <div className="add-student-panel" style={{ marginTop: "32px" }}>
         <div className="form-card-header">
-          <span>Bulk Add Batches</span>
+          <span>Bulk add batches</span>
         </div>
         <div className="form-card-body">
           <ColumnSpec
             required={["batchCode", "batchName"]}
-            optional={["description", "courseNames", "packageNames"]}
+            optional={["description", "courseNames"]}
             notes={[
-              "Multiple courses or packages? Separate names with a + (e.g. Excel+SQL).",
-              "Existing batches (matched by batchCode) are silently skipped.",
+              "Separate multiple courses with a + (e.g. Excel+SQL).",
+              "Existing batches (matched by batchCode) are skipped.",
             ]}
-            example="ONLB201,Online Batch 201,Spring intake,Excel+SQL,Data Analytics"
+            example="ONLB201,Online Batch 201,Spring intake,Excel+SQL"
           />
           <form
             action={async (fd: FormData) => {
@@ -161,46 +188,32 @@ export default async function BulkPage() {
               if (!r.ok) throw new Error(r.error);
             }}
           >
-            <div className="form-grid">
-              <div className="form-field-group">
-                <label>
-                  CSV / TXT File
-                  <input type="file" name="file" accept=".csv,.txt" />
-                </label>
-              </div>
-            </div>
-
-            <div className="form-field-group" style={{ marginTop: "16px", marginBottom: "20px" }}>
+            <div className="form-field-group" style={{ marginBottom: "20px" }}>
               <label>
-                Or Paste CSV Text (one batch record per line)
+                Paste CSV (one batch per line)
                 <textarea
                   name="text"
                   rows={6}
                   placeholder={
-                    "# batchCode,batchName,description,courseNames,packageNames\n" +
-                    "ONLB201,Online Batch 201,Spring intake,Excel+SQL,Data Analytics\n" +
-                    "ONLB202,Online Batch 202,,,ADFFA\n"
+                    "# batchCode,batchName,description,courseNames\n" +
+                    "ONLB201,Online Batch 201,Spring intake,Excel+SQL\n"
                   }
                 />
               </label>
             </div>
-
-            <h3 style={{ marginTop: "28px", marginBottom: "12px" }}>Apply parameters to every batch (optional)</h3>
-            <div className="pickers-grid">
-              <MultiCheckPicker
-                name="applyCourseIds"
-                legend="Courses to assign to every uploaded batch"
-                items={courses.map((c) => ({ id: c.id, label: c.name }))}
-                placeholder="Search courses…"
-              />
-              <MultiCheckPicker
-                name="applyPackageIds"
-                legend="Packages to assign to every uploaded batch"
-                items={packages.map((p) => ({ id: p.id, label: p.name }))}
-                placeholder="Search packages…"
-              />
+            <div className="form-field-group" style={{ marginBottom: "20px" }}>
+              <label>
+                Or upload CSV / TXT
+                <input type="file" name="file" accept=".csv,.txt" />
+              </label>
             </div>
-
+            <h3 style={{ marginTop: "12px", marginBottom: "12px" }}>Apply to every batch (optional)</h3>
+            <MultiCheckPicker
+              name="applyCourseIds"
+              legend="Courses to assign to every uploaded batch"
+              items={courses.map((c) => ({ id: c.id, label: c.name }))}
+              placeholder="Search courses…"
+            />
             <div className="form-actions">
               <button type="submit">Create batches</button>
             </div>
@@ -208,10 +221,10 @@ export default async function BulkPage() {
         </div>
       </div>
 
-      {/* Bulk Add Courses Card */}
-      <div className="add-student-panel" style={{ marginTop: "32px" }}>
+      {/* Bulk Add Courses */}
+      <div className="add-student-panel" style={{ marginTop: "32px", marginBottom: "48px" }}>
         <div className="form-card-header">
-          <span>Bulk Add Courses</span>
+          <span>Bulk add courses</span>
         </div>
         <div className="form-card-body">
           <ColumnSpec
@@ -219,7 +232,7 @@ export default async function BulkPage() {
             optional={["description", "status"]}
             notes={[
               "status is either active (default) or inactive.",
-              "Existing courses (matched by name) are silently skipped.",
+              "Existing courses (matched by name) are skipped.",
             ]}
             example="Tally,Tally accounting basics,active"
           />
@@ -230,109 +243,24 @@ export default async function BulkPage() {
               if (!r.ok) throw new Error(r.error);
             }}
           >
-            <div className="form-grid">
-              <div className="form-field-group">
-                <label>
-                  CSV / TXT File
-                  <input type="file" name="file" accept=".csv,.txt" />
-                </label>
-              </div>
-            </div>
-
-            <div className="form-field-group" style={{ marginTop: "16px", marginBottom: "20px" }}>
+            <div className="form-field-group" style={{ marginBottom: "20px" }}>
               <label>
-                Or Paste CSV Text (one course record per line)
+                Paste CSV (one course per line)
                 <textarea
                   name="text"
                   rows={6}
-                  placeholder={
-                    "# name,description,status\n" +
-                    "Tally,Tally accounting basics,active\n" +
-                    "Java,Intro to Java,active\n"
-                  }
+                  placeholder={"# name,description,status\nTally,Tally accounting basics,active\n"}
                 />
               </label>
             </div>
-
+            <div className="form-field-group">
+              <label>
+                Or upload CSV / TXT
+                <input type="file" name="file" accept=".csv,.txt" />
+              </label>
+            </div>
             <div className="form-actions">
               <button type="submit">Create courses</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      {/* Bulk Enroll Existing Students Card */}
-      <div className="add-student-panel" style={{ marginTop: "32px", marginBottom: "48px" }}>
-        <div className="form-card-header">
-          <span>Bulk Enroll Existing Students</span>
-        </div>
-        <div className="form-card-body">
-          <ColumnSpec
-            required={["studentCode or email"]}
-            optional={[]}
-            notes={[
-              "Each row is ONE identifier — either a student code OR an email.",
-              "Separate identifiers with a new line OR a comma.",
-              "Pick exactly one course OR one package to enroll them in — not both.",
-              "Unknown identifiers are reported back; the rest are enrolled.",
-            ]}
-            example={
-              "S001, S002, S003\nalice@example.com, bob@example.com"
-            }
-          />
-          <form
-            action={async (fd: FormData) => {
-              "use server";
-              const r = await bulkEnrollStudentsFromForm(fd);
-              if (!r.ok) throw new Error(r.error);
-            }}
-          >
-            <div className="form-grid">
-              <div className="form-field-group">
-                <label>
-                  CSV / TXT File
-                  <input type="file" name="file" accept=".csv,.txt" />
-                </label>
-              </div>
-            </div>
-
-            <div className="form-field-group" style={{ marginTop: "16px", marginBottom: "20px" }}>
-              <label>
-                Student Identifiers (one per line or separated by comma)
-                <textarea
-                  name="identifiers"
-                  rows={8}
-                  placeholder={
-                    "S001, S002, S003\nalice@example.com, bob@example.com"
-                  }
-                />
-              </label>
-            </div>
-
-            <h3 style={{ marginTop: "24px", marginBottom: "12px" }}>Choose Single Assignment</h3>
-            <div className="form-grid">
-              <div className="form-field-group">
-                <Dropdown
-                  name="courseId"
-                  label="Course to Enroll"
-                  options={courseSingleOptions}
-                  placeholder="—"
-                  minWidth={240}
-                />
-              </div>
-              <div className="form-field-group">
-                <Dropdown
-                  name="packageId"
-                  label="or Package to Enroll"
-                  options={packageSingleOptions}
-                  placeholder="—"
-                  minWidth={240}
-                />
-              </div>
-            </div>
-
-            <div className="form-actions">
-              <button type="submit">Enroll students</button>
             </div>
           </form>
         </div>

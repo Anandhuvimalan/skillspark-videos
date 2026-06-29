@@ -4,10 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   BookOpen,
-  ClipboardList,
   Layers3,
   LayoutDashboard,
-  Package,
   Search,
   ScrollText,
   Sparkles,
@@ -19,9 +17,7 @@ const navItems = [
   { href: "/admin", label: "Home", icon: LayoutDashboard },
   { href: "/admin/students", label: "Students", icon: Users },
   { href: "/admin/batches", label: "Batches", icon: Layers3 },
-  { href: "/admin/packages", label: "Packages", icon: Package },
   { href: "/admin/courses", label: "Courses", icon: BookOpen },
-  { href: "/admin/enrollments", label: "Enrollments", icon: ClipboardList },
   { href: "/admin/search", label: "Search", icon: Search },
   { href: "/admin/bulk", label: "Bulk", icon: Upload },
   { href: "/admin/audit-logs", label: "Audit logs", icon: ScrollText },

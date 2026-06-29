@@ -21,18 +21,6 @@ async function main() {
   });
   console.log("[seed] admin:", admin.email);
 
-  // Batches
-  const batchONLB101 = await prisma.batch.upsert({
-    where: { batchCode: "ONLB101" },
-    create: { batchCode: "ONLB101", batchName: "Online Batch 101" },
-    update: {},
-  });
-  const batchONLB102 = await prisma.batch.upsert({
-    where: { batchCode: "ONLB102" },
-    create: { batchCode: "ONLB102", batchName: "Online Batch 102" },
-    update: {},
-  });
-
   // Courses
   const courseNames = [
     "Excel",
@@ -54,78 +42,43 @@ async function main() {
     courses.set(name, c.id);
   }
 
-  // Packages
-  const adffa = await prisma.package.upsert({
-    where: { name: "ADFFA" },
-    create: { name: "ADFFA", description: "Accounting/Finance fundamentals" },
-    update: {},
-  });
-  const dataAnalytics = await prisma.package.upsert({
-    where: { name: "Data Analytics" },
-    create: { name: "Data Analytics" },
-    update: {},
-  });
-
-  async function linkPackageCourse(packageId: string, courseId: string) {
-    await prisma.packageCourse.upsert({
-      where: { packageId_courseId: { packageId, courseId } },
-      create: { packageId, courseId },
-      update: {},
+  // Batches (the only access path) + their assigned courses.
+  async function upsertBatch(batchCode: string, batchName: string, courseNamesForBatch: string[]) {
+    const b = await prisma.batch.upsert({
+      where: { batchCode },
+      create: { batchCode, batchName },
+      update: { batchName },
     });
+    for (const n of courseNamesForBatch) {
+      await prisma.batchCourse.upsert({
+        where: { batchId_courseId: { batchId: b.id, courseId: courses.get(n)! } },
+        create: { batchId: b.id, courseId: courses.get(n)! },
+        update: {},
+      });
+    }
+    return b;
   }
 
-  for (const n of ["GST", "VAT", "Accounting", "Excel"]) {
-    await linkPackageCourse(adffa.id, courses.get(n)!);
-  }
-  for (const n of ["Excel", "SQL", "Python", "Power BI Desktop", "Power BI Service"]) {
-    await linkPackageCourse(dataAnalytics.id, courses.get(n)!);
-  }
+  const batchData = await upsertBatch("ONLB101", "Online Batch 101 (Data Analytics)", [
+    "Excel", "SQL", "Python", "Power BI Desktop", "Power BI Service",
+  ]);
+  const batchAccounting = await upsertBatch("ONLB102", "Online Batch 102 (Accounting)", [
+    "GST", "VAT", "Accounting", "Excel",
+  ]);
+  const batchEmpty = await upsertBatch("ONLB103", "Online Batch 103 (no courses yet)", []);
 
-  // Batch assignment: ONLB 101 gets Data Analytics
-  await prisma.batchPackage.upsert({
-    where: { batchId_packageId: { batchId: batchONLB101.id, packageId: dataAnalytics.id } },
-    create: { batchId: batchONLB101.id, packageId: dataAnalytics.id },
-    update: {},
-  });
-
-  // Sample students
+  // Sample students, each in zero or more batches.
   const studentSpecs: Array<{
     studentCode: string;
     name: string;
     email: string;
-    batchId?: string | null;
-    direct?: { courseNames?: string[]; packageNames?: string[] };
+    batchIds: string[];
   }> = [
-    {
-      studentCode: "S100",
-      name: "Adira (ADFFA pkg)",
-      email: "adira@example.com",
-      direct: { packageNames: ["ADFFA"] },
-    },
-    {
-      studentCode: "S101",
-      name: "Eli (Excel only)",
-      email: "eli@example.com",
-      direct: { courseNames: ["Excel"] },
-    },
-    {
-      studentCode: "S102",
-      name: "Pavi (Python+SQL)",
-      email: "pavi@example.com",
-      direct: { courseNames: ["Python", "SQL"] },
-    },
-    {
-      studentCode: "S103",
-      name: "Bina (ONLB101 batch)",
-      email: "bina@example.com",
-      batchId: batchONLB101.id,
-    },
-    {
-      studentCode: "S104",
-      name: "Cy (ONLB102 no access)",
-      email: "cy@example.com",
-      batchId: batchONLB102.id,
-    },
+    { studentCode: "S100", name: "Adira (accounting batch)", email: "adira@example.com", batchIds: [batchAccounting.id] },
+    { studentCode: "S101", name: "Eli (data analytics)", email: "eli@example.com", batchIds: [batchData.id] },
+    { studentCode: "S102", name: "Pavi (both batches)", email: "pavi@example.com", batchIds: [batchData.id, batchAccounting.id] },
+    { studentCode: "S103", name: "Bina (data analytics)", email: "bina@example.com", batchIds: [batchData.id] },
+    { studentCode: "S104", name: "Cy (empty batch, no access)", email: "cy@example.com", batchIds: [batchEmpty.id] },
   ];
 
   for (const spec of studentSpecs) {
@@ -135,30 +88,19 @@ async function main() {
         studentCode: spec.studentCode,
         name: spec.name,
         email: spec.email,
-        batchId: spec.batchId ?? null,
         accessStartDate: days(-7),
         accessEndDate: days(365),
       },
       update: {
         name: spec.name,
-        batchId: spec.batchId ?? null,
         accessStartDate: days(-7),
         accessEndDate: days(365),
       },
     });
-    for (const cn of spec.direct?.courseNames ?? []) {
-      const cid = courses.get(cn)!;
-      await prisma.studentCourse.upsert({
-        where: { studentId_courseId: { studentId: s.id, courseId: cid } },
-        create: { studentId: s.id, courseId: cid },
-        update: {},
-      });
-    }
-    for (const pn of spec.direct?.packageNames ?? []) {
-      const pkg = pn === "ADFFA" ? adffa : dataAnalytics;
-      await prisma.studentPackage.upsert({
-        where: { studentId_packageId: { studentId: s.id, packageId: pkg.id } },
-        create: { studentId: s.id, packageId: pkg.id },
+    for (const batchId of spec.batchIds) {
+      await prisma.studentBatch.upsert({
+        where: { studentId_batchId: { studentId: s.id, batchId } },
+        create: { studentId: s.id, batchId },
         update: {},
       });
     }
