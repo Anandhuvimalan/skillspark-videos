@@ -20,23 +20,6 @@ type R<T> = RD<T>;
 const MAX_TEXT_LEN = 200_000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
-/** Allocates unique studentCodes (SS0001, …) skipping any already in the DB. */
-async function makeCodeAllocator(prefix = "SS"): Promise<() => string> {
-  const existing = new Set(
-    (await prisma.student.findMany({ select: { studentCode: true } })).map((s) => s.studentCode),
-  );
-  let counter = 1;
-  return () => {
-    let code: string;
-    do {
-      code = `${prefix}${String(counter).padStart(4, "0")}`;
-      counter++;
-    } while (existing.has(code));
-    existing.add(code);
-    return code;
-  };
-}
-
 async function readFormText(formData: FormData): Promise<string | { error: string }> {
   let text = String(formData.get("text") ?? "");
   const file = formData.get("file");
@@ -84,33 +67,49 @@ export async function bulkAddStudentsToBatch(
     const failed = errors.map((e) => ({ line: e.line, reason: e.reason }));
     let skipped = 0;
 
-    // Dedupe within input by email (first wins).
-    const seen = new Set<string>();
+    // Dedupe within the input by email AND studentCode (first wins).
+    const seenEmails = new Set<string>();
+    const seenCodes = new Set<string>();
     const rows = rawRows.filter((r) => {
-      if (seen.has(r.email)) { skipped++; return false; }
-      seen.add(r.email);
+      if (seenEmails.has(r.email) || seenCodes.has(r.studentCode)) { skipped++; return false; }
+      seenEmails.add(r.email);
+      seenCodes.add(r.studentCode);
       return true;
     });
 
+    // Dedup against the DB: a row already "seen" (same email OR same admin id)
+    // is reused, never recreated — so re-uploading the same file adds only the
+    // genuinely new students.
     const existing = rows.length
       ? await prisma.student.findMany({
-          where: { email: { in: rows.map((r) => r.email) } },
-          select: { id: true, email: true },
+          where: {
+            OR: [
+              { email: { in: rows.map((r) => r.email) } },
+              { studentCode: { in: rows.map((r) => r.studentCode) } },
+            ],
+          },
+          select: { id: true, email: true, studentCode: true },
         })
       : [];
-    const existingByEmail = new Map(existing.map((s) => [s.email, s.id]));
+    const existingEmails = new Set(existing.map((s) => s.email));
+    const existingCodes = new Set(existing.map((s) => s.studentCode));
+    const rowEmailSet = new Set(rows.map((r) => r.email));
+    // How many of these emails already existed before we inserted anything.
+    const preExistingByEmail = existing.filter((e) => rowEmailSet.has(e.email)).length;
 
     // Batched: at most ~3 round-trips regardless of how many students are
-    // pasted (was one round-trip PER row). 1) insert all new students, 2)
-    // resolve every row's id, 3) add them all to the batch.
-    const nextCode = await makeCodeAllocator();
-    const newRows = rows.filter((r) => !existingByEmail.has(r.email));
+    // pasted. 1) insert genuinely-new students (admin-given code), 2) resolve
+    // every row's id, 3) add them all to the batch. New = email AND code both
+    // unseen in the DB.
+    const newRows = rows.filter(
+      (r) => !existingEmails.has(r.email) && !existingCodes.has(r.studentCode),
+    );
 
     try {
       if (newRows.length) {
         await prisma.student.createMany({
           data: newRows.map((r) => ({
-            studentCode: r.studentCode ?? nextCode(),
+            studentCode: r.studentCode,
             name: r.name,
             email: r.email,
             accessStartDate: parsed.data.defaultStartDate,
@@ -130,7 +129,7 @@ export async function bulkAddStudentsToBatch(
         })
       : [];
     const idByEmail = new Map(all.map((s) => [s.email, s.id]));
-    const created = all.length - existing.length; // net new students inserted
+    const created = all.length - preExistingByEmail; // net new students inserted
 
     const studentIds = [
       ...new Set(rows.map((r) => idByEmail.get(r.email)).filter((x): x is string => !!x)),

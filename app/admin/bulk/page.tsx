@@ -47,14 +47,16 @@ export default async function BulkPage() {
         </div>
         <div className="form-card-body">
           <ColumnSpec
-            required={["name", "email"]}
-            optional={["studentCode"]}
+            required={["email", "student id + name"]}
+            optional={[]}
             notes={[
+              "Paste/upload the shared roster: column 1 = email, column 2 = the student id followed by the name (e.g. KLM 2606 1282 Seethal U → id \"KLM 2606 1282\", name \"Seethal U\").",
+              "The student id is admin-given (taken from the file), never auto-generated.",
+              "The sheet's title/header rows are ignored automatically.",
               "Pick the batch first — it already has its courses; students inherit them.",
-              "A bare email per line also works (name is derived from the email).",
-              "studentCode is auto-generated when omitted. Existing students are added to the batch.",
+              "Already-added students (matched by email or id) are skipped, so re-uploading the same file with new rows only adds the new ones.",
             ]}
-            example="Alice,alice@example.com"
+            example="seethaludayan4@gmail.com, KLM 2606 1282 Seethal U"
           />
           <ActionForm
             successMessage="Students added to batch."
@@ -83,8 +85,12 @@ export default async function BulkPage() {
             </div>
             <div className="form-field-group" style={{ marginTop: "16px", marginBottom: "20px" }}>
               <label>
-                Students (one per line)
-                <textarea name="text" rows={8} placeholder={"Alice,alice@example.com\nbob@example.com"} />
+                Students (one per line: email, student id + name)
+                <textarea
+                  name="text"
+                  rows={8}
+                  placeholder={"seethaludayan4@gmail.com, KLM 2606 1282 Seethal U\nabdulmajeed214@gmail.com, KLM 2606 1284 Alfiya A"}
+                />
               </label>
             </div>
             <div className="form-field-group">

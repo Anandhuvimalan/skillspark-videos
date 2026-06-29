@@ -15,7 +15,8 @@ export const studentCodeSchema = z
   .trim()
   .min(1)
   .max(64)
-  .regex(/^[A-Za-z0-9_-]+$/, "studentCode must be alphanumeric/_/-");
+  // Admin-given IDs may contain spaces, e.g. "KLM 2606 1282".
+  .regex(/^[A-Za-z0-9 _-]+$/, "studentCode must be letters/digits/space/_/-");
 
 export const dateSchema = z
   .union([z.string(), z.date()])

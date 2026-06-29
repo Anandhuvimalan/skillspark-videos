@@ -132,8 +132,9 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
           }}
         >
           <p style={{ marginBottom: "12px", color: "var(--muted)", fontWeight: 500 }}>
-            One per line: <code>name,email</code> or <code>name,email,studentCode</code> (a bare email also works).
-            Existing students are added to the batch; new ones are created.
+            One per line from the shared roster: <code>email, student id + name</code> (e.g.{" "}
+            <code>seethaludayan4@gmail.com, KLM 2606 1282 Seethal U</code>). The id is admin-given.
+            Already-added students (by email or id) are skipped, so re-uploading only adds new rows.
           </p>
           <div className="form-grid">
             <div className="form-field-group">
@@ -151,8 +152,12 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
           </div>
           <div className="form-field-group">
             <label>
-              Students
-              <textarea name="text" rows={6} placeholder={"Jane Doe,jane@example.com\nbob@example.com"} />
+              Students (one per line: email, student id + name)
+              <textarea
+                name="text"
+                rows={6}
+                placeholder={"seethaludayan4@gmail.com, KLM 2606 1282 Seethal U\nabdulmajeed214@gmail.com, KLM 2606 1284 Alfiya A"}
+              />
             </label>
           </div>
           <div className="form-actions">
