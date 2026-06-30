@@ -1,10 +1,9 @@
-import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/authorization";
 import { createBatch } from "@/actions/batches";
 import MultiCheckPicker from "@/components/MultiCheckPicker";
 import ActionForm from "@/components/ActionForm";
-import RowDeleteButton from "@/components/RowDeleteButton";
+import BatchesBrowser from "@/components/BatchesBrowser";
 
 export default async function BatchesPage() {
   await requireAdmin();
@@ -80,34 +79,15 @@ export default async function BatchesPage() {
         </ActionForm>
       </div>
 
-      <h2>All batches</h2>
-      <div className="table-wrap">
-        <table border={1} cellPadding={4}>
-          <thead>
-            <tr>
-              <th>Code</th>
-              <th>Name</th>
-              <th>Students</th>
-              <th>Courses</th>
-              <th aria-label="Actions"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {batches.map((b) => (
-              <tr key={b.id}>
-                <td>{b.batchCode}</td>
-                <td>{b.batchName}</td>
-                <td>{b._count.studentBatches}</td>
-                <td>{b._count.batchCourses}</td>
-                <td className="row-actions">
-                  <Link className="row-btn" href={`/admin/batches/${b.id}`}>Open</Link>
-                  <RowDeleteButton kind="batch" id={b.id} label={b.batchCode} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <BatchesBrowser
+        batches={batches.map((b) => ({
+          id: b.id,
+          batchCode: b.batchCode,
+          batchName: b.batchName,
+          studentCount: b._count.studentBatches,
+          courseCount: b._count.batchCourses,
+        }))}
+      />
     </div>
   );
 }

@@ -5,33 +5,31 @@ import Link from "next/link";
 import { Pencil, Search, SquareArrowOutUpRight, Trash2 } from "lucide-react";
 import ActionButton from "@/components/ActionButton";
 import Pager from "@/components/Pager";
-import { deleteCourse } from "@/actions/courses";
+import { deleteBatch } from "@/actions/batches";
 
 const PAGE_SIZE = 10;
 
-type CourseRow = {
+type BatchRow = {
   id: string;
-  name: string;
-  layout: string;
-  status: string;
-  moduleCount: number;
-  videoCount: number;
+  batchCode: string;
+  batchName: string;
+  studentCount: number;
+  courseCount: number;
 };
 
-export default function CoursesBrowser({ courses }: { courses: CourseRow[] }) {
+export default function BatchesBrowser({ batches }: { batches: BatchRow[] }) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return courses;
-    return courses.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.layout.toLowerCase().includes(q) ||
-        c.status.toLowerCase().includes(q),
+    if (!q) return batches;
+    return batches.filter(
+      (b) =>
+        b.batchCode.toLowerCase().includes(q) ||
+        b.batchName.toLowerCase().includes(q),
     );
-  }, [courses, query]);
+  }, [batches, query]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   // Reset to page 1 whenever the result set shrinks below the current page.
@@ -43,7 +41,7 @@ export default function CoursesBrowser({ courses }: { courses: CourseRow[] }) {
   return (
     <div className="browser">
       <div className="browser-toolbar">
-        <h2>All courses</h2>
+        <h2>All batches</h2>
         <div className="search-field">
           <Search size={15} aria-hidden="true" />
           <input
@@ -53,65 +51,56 @@ export default function CoursesBrowser({ courses }: { courses: CourseRow[] }) {
               setQuery(e.target.value);
               setPage(1);
             }}
-            placeholder="Search courses by name, layout, or status…"
-            aria-label="Search courses"
+            placeholder="Search batches by code or name…"
+            aria-label="Search batches"
           />
         </div>
       </div>
 
       {filtered.length === 0 ? (
         <p className="empty-state">
-          {courses.length === 0
-            ? "No courses created yet."
-            : `No courses match “${query}”.`}
+          {batches.length === 0
+            ? "No batches created yet."
+            : `No batches match “${query}”.`}
         </p>
       ) : (
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
+                <th>Code</th>
                 <th>Name</th>
-                <th>Layout</th>
-                <th>Status</th>
-                <th>Children</th>
+                <th>Students</th>
+                <th>Courses</th>
                 <th aria-label="Actions"></th>
               </tr>
             </thead>
             <tbody>
-              {pageItems.map((c) => (
-                <tr key={c.id}>
+              {pageItems.map((b) => (
+                <tr key={b.id}>
                   <td>
-                    <strong>{c.name}</strong>
-                  </td>
-                  <td>{c.layout}</td>
-                  <td>
-                    <span
-                      className="status-pill"
-                      data-tone={c.status === "active" ? undefined : "danger"}
-                    >
-                      {c.status}
-                    </span>
+                    <code>{b.batchCode}</code>
                   </td>
                   <td>
-                    {c.layout === "module"
-                      ? `${c.moduleCount} module(s)`
-                      : `${c.videoCount} video(s)`}
+                    <strong>{b.batchName}</strong>
                   </td>
+                  <td>{b.studentCount}</td>
+                  <td>{b.courseCount}</td>
                   <td className="row-actions">
-                    <Link className="row-btn" href={`/admin/courses/${c.id}`}>
+                    <Link className="row-btn" href={`/admin/batches/${b.id}`}>
                       <SquareArrowOutUpRight size={13} aria-hidden="true" />
                       Open
                     </Link>
-                    <Link className="row-btn" href={`/admin/courses/${c.id}#edit`}>
+                    <Link className="row-btn" href={`/admin/batches/${b.id}#edit`}>
                       <Pencil size={13} aria-hidden="true" />
                       Edit
                     </Link>
                     <ActionButton
-                      action={() => deleteCourse(c.id)}
-                      successMessage={`Deleted “${c.name}”.`}
-                      confirm={`Delete “${c.name}”? This removes its modules, videos, and notes, and revokes student access.`}
+                      action={() => deleteBatch(b.id)}
+                      successMessage={`Deleted batch “${b.batchCode}”.`}
+                      confirm={`Delete batch “${b.batchCode}”? Students are removed from it but not deleted.`}
                       className="row-delete"
-                      ariaLabel={`Delete ${c.name}`}
+                      ariaLabel={`Delete ${b.batchCode}`}
                     >
                       <Trash2 size={12} aria-hidden="true" />
                     </ActionButton>

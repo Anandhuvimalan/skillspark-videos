@@ -3365,6 +3365,7 @@ td code {
   color: var(--ink-soft);
   background: rgba(255, 255, 255, 0.02);
   box-shadow: none;
+  font-family: inherit;
   font-size: 0.86rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -10413,7 +10414,14 @@ h2.adm-section-title {
   box-shadow: none !important;
 }
 .adm table { border: 0 !important; box-shadow: none !important; background: transparent !important; }
-.adm thead { background: var(--surface-2) !important; }
+/* header band: a clear gray strip + darker, bordered labels so the column
+   headers read against the cream page background (was --surface-2, which was
+   nearly identical to --bg and made the headers disappear). */
+.adm thead { background: rgba(10, 10, 10, 0.055) !important; }
+.adm thead th {
+  color: var(--ink-soft) !important;
+  border-bottom: 1px solid var(--line-strong) !important;
+}
 
 /* count badge - plain muted number, not a pill */
 .adm .count-badge {
@@ -10486,4 +10494,49 @@ h2.adm-section-title {
   font-weight: 800 !important;
   letter-spacing: 0.08em !important;
   box-shadow: none !important;
+}
+
+/* The picker's option list, restyled to read like the single-select Dropdown
+   popup on the Students page: white panel, soft rows, accent hover/selected,
+   with the checkbox clearly on the left of each row. */
+.adm .picker-list {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: 10px !important;
+  padding: 6px !important;
+  gap: 1px !important;
+}
+.adm .picker-list label {
+  grid-template-columns: 18px minmax(0, 1fr) !important;
+  border-radius: 8px !important;
+  padding: 9px 12px !important;
+}
+.adm .picker-list input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  accent-color: var(--ink) !important;
+}
+.adm .picker-list li:hover {
+  background: rgba(124, 92, 255, 0.1) !important;
+}
+.adm .picker-list li:has(input:checked) {
+  background: rgba(124, 92, 255, 0.12) !important;
+  box-shadow: inset 2px 0 0 var(--accent) !important;
+}
+.adm .picker-list .picker-label {
+  color: var(--ink) !important;
+  font-weight: 600 !important;
+}
+
+/* "Clear all" was floated to the far right (margin-left:auto) and wrapped out
+   of sight; pull it back beside the chips and give it a clear reset look. */
+.adm .filter-chip--clear {
+  margin-left: 4px !important;
+  color: var(--red) !important;
+  border: 1px solid rgba(239, 68, 68, 0.4) !important;
+  background: var(--red-soft) !important;
+  font-weight: 700 !important;
+}
+.adm .filter-chip--clear:hover {
+  background: rgba(239, 68, 68, 0.16) !important;
 }

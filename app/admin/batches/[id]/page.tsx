@@ -47,7 +47,7 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
         courses progressively as classes happen.
       </p>
 
-      <div className="add-student-panel">
+      <div className="add-student-panel" id="edit">
         <div className="form-card-header">
           <span>Batch profile</span>
         </div>
