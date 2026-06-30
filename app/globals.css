@@ -10496,38 +10496,6 @@ h2.adm-section-title {
   box-shadow: none !important;
 }
 
-/* The picker's option list, restyled to read like the single-select Dropdown
-   popup on the Students page: white panel, soft rows, accent hover/selected,
-   with the checkbox clearly on the left of each row. */
-.adm .picker-list {
-  background: var(--surface) !important;
-  border: 1px solid var(--line-strong) !important;
-  border-radius: 10px !important;
-  padding: 6px !important;
-  gap: 1px !important;
-}
-.adm .picker-list label {
-  grid-template-columns: 18px minmax(0, 1fr) !important;
-  border-radius: 8px !important;
-  padding: 9px 12px !important;
-}
-.adm .picker-list input[type="checkbox"] {
-  width: 16px !important;
-  height: 16px !important;
-  accent-color: var(--ink) !important;
-}
-.adm .picker-list li:hover {
-  background: rgba(124, 92, 255, 0.1) !important;
-}
-.adm .picker-list li:has(input:checked) {
-  background: rgba(124, 92, 255, 0.12) !important;
-  box-shadow: inset 2px 0 0 var(--accent) !important;
-}
-.adm .picker-list .picker-label {
-  color: var(--ink) !important;
-  font-weight: 600 !important;
-}
-
 /* "Clear all" was floated to the far right (margin-left:auto) and wrapped out
    of sight; pull it back beside the chips and give it a clear reset look. */
 .adm .filter-chip--clear {
