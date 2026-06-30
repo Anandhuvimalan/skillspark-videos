@@ -6,7 +6,6 @@ import {
   Upload,
   UserPlus,
   Users,
-  X,
 } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/authorization";
@@ -16,6 +15,7 @@ import Pagination from "@/components/Pagination";
 import StudentAddForm from "@/components/StudentAddForm";
 import ActionForm from "@/components/ActionForm";
 import SelectAllCheckbox from "@/components/SelectAllCheckbox";
+import FilterChips from "@/components/FilterChips";
 import { getActiveBatches, getActiveCourses } from "@/lib/catalog-cache";
 import { getStudentsWithCourseAccess } from "@/lib/course-access";
 import { bulkAction } from "@/actions/bulk";
@@ -128,15 +128,6 @@ export default async function StudentsPage({
     if (parts.length === 0) return "—";
     if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
     return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
-  };
-
-  const buildFilterHrefWithout = (key: string) => {
-    const params = new URLSearchParams();
-    Object.entries(sp).forEach(([k, v]) => {
-      if (v && v !== "" && k !== key && k !== "page") params.set(k, v);
-    });
-    const qs = params.toString();
-    return qs ? `/admin/students?${qs}` : "/admin/students";
   };
 
   // KPI tiles double as one-click roster filters. `patch` overrides the
@@ -311,26 +302,7 @@ export default async function StudentsPage({
         </button>
       </form>
 
-      {activeChips.length > 0 && (
-        <div className="filter-chips" role="list" aria-label="Active filters">
-          <span className="filter-chips-label">Active filters</span>
-          {activeChips.map((chip) => (
-            <Link
-              key={chip.key}
-              href={buildFilterHrefWithout(chip.key)}
-              className="filter-chip"
-              role="listitem"
-              aria-label={`Clear ${chip.label}`}
-            >
-              <span>{chip.label}</span>
-              <X size={12} aria-hidden="true" />
-            </Link>
-          ))}
-          <Link href="/admin/students" className="filter-chip filter-chip--clear">
-            Clear all
-          </Link>
-        </div>
-      )}
+      <FilterChips chips={activeChips} basePath="/admin/students" searchParams={sp} />
 
       <div className="results-head">
         <h2>

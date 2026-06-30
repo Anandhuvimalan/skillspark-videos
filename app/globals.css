@@ -1291,10 +1291,19 @@ hr {
   padding: 4px 10px 4px 12px;
   color: var(--accent);
   background: var(--accent-soft);
+  font-family: inherit;
   font-size: 0.82rem;
   font-weight: 700;
   text-decoration: none;
+  cursor: pointer;
   transition: background 160ms ease, border-color 160ms ease;
+}
+
+/* While a clear is in flight the bar dims + ignores clicks so the action
+   reads as "registered" instantly even before the filtered view streams in. */
+.filter-chips[data-pending="true"] {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .filter-chip:hover {
