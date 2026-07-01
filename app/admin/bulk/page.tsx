@@ -78,12 +78,7 @@ export default async function BulkPage() {
         />
         <ActionForm
           className="adm-form"
-          successMessage={(data) => {
-            const d = data as { created?: number; addedExisting?: number; emailed?: number } | undefined;
-            const added = (d?.created ?? 0) + (d?.addedExisting ?? 0);
-            const base = `Students added to batch (${added}).`;
-            return d?.emailed ? `${base} Emailed ${d.emailed}.` : base;
-          }}
+          successMessage="Students added to batch (and emailed, if selected)."
           resetOnSuccess
           action={async (fd: FormData) => {
             "use server";
