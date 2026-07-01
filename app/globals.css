@@ -5867,6 +5867,20 @@ table th, table td {
   letter-spacing: 0.05em !important;
 }
 
+/* When a MultiCheckPicker sits inside a .form-field-group (e.g. the bulk
+   "assign courses" picker), the generic field-label rule above would stack the
+   checkbox on top of the text and uppercase it. Restore the picker's own row
+   layout: checkbox on the LEFT, label beside it — matching the student form. */
+.form-field-group .picker-list label {
+  display: grid !important;
+  grid-template-columns: 18px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 10px !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  font-size: 1rem !important;
+}
+
 .form-field-group input,
 .form-field-group select,
 .form-field-group textarea {
