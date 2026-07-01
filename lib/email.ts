@@ -1,5 +1,11 @@
 import "server-only";
 import nodemailer, { type Transporter } from "nodemailer";
+import { marked } from "marked";
+
+// Admin templates are Markdown: **bold**, ### headings, > quotes, 1. lists,
+// [links](url) and bare URLs. `breaks: true` turns single newlines into <br>
+// so pasted text keeps its line breaks without needing double spacing.
+marked.setOptions({ gfm: true, breaks: true });
 
 /**
  * Email provider. Pluggable like lib/drive.ts / lib/video-provider.ts: the rest
@@ -172,22 +178,24 @@ export function renderTemplate(tpl: string, r: EmailRecipient): string {
   );
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+/** Render the Markdown body to HTML, wrapped in a mail-friendly container. */
+function markdownToHtml(md: string): string {
+  const inner = marked.parse(md, { async: false }) as string;
+  return `<div style="font-family:system-ui,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">${inner}</div>`;
 }
 
-/** Minimal text -> HTML: escape, linkify bare URLs, newlines -> <br>. */
-function textToHtml(text: string): string {
-  const escaped = escapeHtml(text);
-  const linked = escaped.replace(
-    /(https?:\/\/[^\s<]+)/g,
-    (url) => `<a href="${url}">${url}</a>`,
-  );
-  return `<div style="font-family:system-ui,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">${linked.replace(/\n/g, "<br>")}</div>`;
+/** Best-effort plain-text version for the text/plain part: drop Markdown
+ *  markers so `**bold**` etc. don't show their literal asterisks. */
+function markdownToPlain(md: string): string {
+  return md
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // headings
+    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
+    .replace(/\*\*(.+?)\*\*/g, "$1") // **bold**
+    .replace(/__(.+?)__/g, "$1") // __bold__
+    .replace(/`([^`]+)`/g, "$1") // `code`
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)") // [text](url)
+    .replace(/^\s{0,3}[-*+]\s+/gm, "• ") // bullets
+    .trim();
 }
 
 // ---- public send ----
@@ -250,8 +258,9 @@ export async function sendPersonalizedEmails(
     while (cursor < valid.length) {
       const r = valid[cursor++];
       const subject = renderTemplate(subjectTpl, r).replace(/\s+/g, " ").trim();
-      const text = renderTemplate(bodyTpl, r);
-      const html = textToHtml(text);
+      const rendered = renderTemplate(bodyTpl, r);
+      const text = markdownToPlain(rendered);
+      const html = markdownToHtml(rendered);
       try {
         if (zepto) {
           await sendViaZepto(zepto, r, subject, text, html);

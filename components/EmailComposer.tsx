@@ -115,7 +115,8 @@ export default function EmailComposer({
           <p className="email-hint">
             Placeholders: <code>{"{{name}}"}</code> <code>{"{{email}}"}</code>{" "}
             <code>{"{{studentCode}}"}</code> <code>{"{{platformUrl}}"}</code> — each is filled in per student.
-            Every recipient gets their own private copy.
+            Every recipient gets their own private copy. Markdown is supported
+            (<code>**bold**</code>, <code>### heading</code>, <code>- list</code>, <code>&gt; quote</code>).
           </p>
         </div>
 

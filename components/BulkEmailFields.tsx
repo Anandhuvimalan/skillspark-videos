@@ -44,7 +44,7 @@ export default function BulkEmailFields({ defaultSubject, defaultBody }: Props) 
           <p className="email-hint">
             Placeholders: <code>{"{{name}}"}</code> <code>{"{{email}}"}</code>{" "}
             <code>{"{{studentCode}}"}</code> <code>{"{{platformUrl}}"}</code> — filled per student.
-            Each gets a private copy.
+            Each gets a private copy. Markdown supported (<code>**bold**</code>, <code>### heading</code>, lists).
           </p>
         </div>
       )}
