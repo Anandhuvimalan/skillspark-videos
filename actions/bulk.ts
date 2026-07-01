@@ -11,6 +11,7 @@ import {
   parseIdentifierList,
 } from "@/lib/bulk";
 import { bulkActionSchema, dateSchema, idSchema } from "@/lib/validations";
+import { sendPersonalizedEmails, isEmailConfigured } from "@/lib/email";
 import { z } from "zod";
 import * as XLSX from "xlsx";
 import { bad, withAdminD, type RD } from "./_shared";
@@ -68,7 +69,7 @@ const batchStudentsArgs = z.object({
 
 export async function bulkAddStudentsToBatch(
   formData: FormData,
-): Promise<R<{ created: number; addedExisting: number; skipped: number; coursesAssigned: number; failed: { line: number; reason: string }[] }>> {
+): Promise<R<{ created: number; addedExisting: number; skipped: number; coursesAssigned: number; emailed: number; failed: { line: number; reason: string }[] }>> {
   return withAdminD(async (admin) => {
     const text = await readFormText(formData);
     if (typeof text !== "string") return bad(text.error);
@@ -204,14 +205,39 @@ export async function bulkAddStudentsToBatch(
     const addedExisting = Math.max(0, membership.count - created);
     skipped += rows.length - created - addedExisting;
 
+    // Optional: email the just-added students their "how to access" note. The
+    // roster rows already carry name/email/studentCode, so no extra query.
+    let emailed = 0;
+    const wantEmail = String(formData.get("sendEmail") ?? "") === "on";
+    if (wantEmail && rows.length && isEmailConfigured()) {
+      const subject = String(formData.get("emailSubject") ?? "").trim();
+      const body = String(formData.get("emailBody") ?? "").trim();
+      if (subject && body) {
+        const summary = await sendPersonalizedEmails(
+          rows.map((r) => ({ email: r.email, name: r.name, studentCode: r.studentCode })),
+          subject,
+          body,
+        );
+        emailed = summary.sent;
+        await createAuditLog({
+          actorId: admin.id, actorEmail: admin.email, actorType: "admin",
+          action: "EMAIL_SENT", entityType: "Batch", entityId: batch.id,
+          newValue: {
+            source: "bulk-add-to-batch", subject, recipients: rows.length,
+            sent: summary.sent, failed: summary.failed.length, skipped: summary.skipped.length,
+          },
+        });
+      }
+    }
+
     await createAuditLog({
       actorId: admin.id, actorEmail: admin.email, actorType: "admin",
       action: "BULK_STUDENTS_ADDED_TO_BATCH", entityType: "Batch", entityId: batch.id,
-      newValue: { created, addedExisting, skipped, coursesAssigned, failedCount: failed.length },
+      newValue: { created, addedExisting, skipped, coursesAssigned, emailed, failedCount: failed.length },
     });
     revalidatePath("/admin/students");
     revalidatePath(`/admin/batches/${batch.id}`);
-    return { ok: true, data: { created, addedExisting, skipped, coursesAssigned, failed } };
+    return { ok: true, data: { created, addedExisting, skipped, coursesAssigned, emailed, failed } };
   });
 }
 

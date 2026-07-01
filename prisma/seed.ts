@@ -21,6 +21,29 @@ async function main() {
   });
   console.log("[seed] admin:", admin.email);
 
+  // Default student-email template (admin-editable in the composer).
+  await prisma.emailTemplate.upsert({
+    where: { key: "default" },
+    update: {},
+    create: {
+      key: "default",
+      subject: "Access your SkillSpark courses",
+      body: `Hi {{name}},
+
+Your SkillSpark learning account is ready.
+
+How to access your content:
+1. Go to {{platformUrl}}
+2. Click "Sign in with Google" and use THIS email address ({{email}}).
+3. Your assigned courses appear on your dashboard.
+
+If you can't sign in, reply to this email and we'll help.
+
+— SkillSpark Academic Coordinator`,
+    },
+  });
+  console.log("[seed] email template: default");
+
   // Courses
   const courseNames = [
     "Excel",

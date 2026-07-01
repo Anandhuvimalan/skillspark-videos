@@ -16,6 +16,8 @@ import StudentAddForm from "@/components/StudentAddForm";
 import ActionForm from "@/components/ActionForm";
 import SelectAllCheckbox from "@/components/SelectAllCheckbox";
 import FilterChips from "@/components/FilterChips";
+import StudentEmailLauncher from "@/components/StudentEmailLauncher";
+import { getDefaultEmailTemplate } from "@/actions/email";
 import { getActiveBatches, getActiveCourses } from "@/lib/catalog-cache";
 import { getStudentsWithCourseAccess } from "@/lib/course-access";
 import { bulkAction } from "@/actions/bulk";
@@ -83,6 +85,8 @@ export default async function StudentsPage({
     prisma.student.count({ where: { status: "blocked" } }),
     prisma.student.count({ where: { accessEndDate: { lt: now } } }),
   ]);
+
+  const emailTemplate = await getDefaultEmailTemplate();
 
   const totalPages = Math.max(1, Math.ceil(filteredCount / PAGE_SIZE));
 
@@ -327,6 +331,10 @@ export default async function StudentsPage({
         }}
       >
         <div className="bulk-toolbar">
+          <StudentEmailLauncher
+            defaultSubject={emailTemplate.subject}
+            defaultBody={emailTemplate.body}
+          />
           <button type="submit" className="bulk-delete-btn">
             Delete selected
           </button>

@@ -7,6 +7,8 @@ import {
   bulkAddCoursesFromForm,
 } from "@/actions/bulk";
 import { quickCreateBatch } from "@/actions/batches";
+import { getDefaultEmailTemplate } from "@/actions/email";
+import BulkEmailFields from "@/components/BulkEmailFields";
 import MultiCheckPicker from "@/components/MultiCheckPicker";
 import Dropdown from "@/components/Dropdown";
 import ActionForm from "@/components/ActionForm";
@@ -18,7 +20,11 @@ function isoDate(d: Date) {
 
 export default async function BulkPage() {
   await requireAdmin();
-  const [batches, courses] = await Promise.all([getActiveBatches(), getActiveCourses()]);
+  const [batches, courses, emailTemplate] = await Promise.all([
+    getActiveBatches(),
+    getActiveCourses(),
+    getDefaultEmailTemplate(),
+  ]);
 
   const batchOptions = [
     { value: "", label: "— pick a batch —" },
@@ -72,7 +78,12 @@ export default async function BulkPage() {
         />
         <ActionForm
           className="adm-form"
-          successMessage="Students added to batch."
+          successMessage={(data) => {
+            const d = data as { created?: number; addedExisting?: number; emailed?: number } | undefined;
+            const added = (d?.created ?? 0) + (d?.addedExisting ?? 0);
+            const base = `Students added to batch (${added}).`;
+            return d?.emailed ? `${base} Emailed ${d.emailed}.` : base;
+          }}
           resetOnSuccess
           action={async (fd: FormData) => {
             "use server";
@@ -131,6 +142,10 @@ export default async function BulkPage() {
               placeholder="Search courses…"
             />
           </div>
+          <BulkEmailFields
+            defaultSubject={emailTemplate.subject}
+            defaultBody={emailTemplate.body}
+          />
           <div className="form-actions">
             <button type="submit">Add students to batch</button>
           </div>

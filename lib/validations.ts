@@ -240,6 +240,20 @@ export const progressSchema = z.object({
 });
 
 /** Bulk action over selected students from the admin search page. */
+// ---- Email composer ----
+export const emailContentSchema = z.object({
+  subject: z.string().trim().min(1, "subject is required").max(300),
+  body: z.string().trim().min(1, "message body is required").max(20000),
+});
+
+export const emailToStudentsSchema = emailContentSchema.extend({
+  studentIds: z.array(idSchema).min(1, "select at least one student").max(1000),
+});
+
+export const emailToBatchesSchema = emailContentSchema.extend({
+  batchIds: z.array(idSchema).min(1, "select at least one batch").max(100),
+});
+
 export const bulkActionSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("add_to_batch"),

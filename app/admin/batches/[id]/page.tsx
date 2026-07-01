@@ -8,6 +8,8 @@ import { bulkAddStudentsToBatch } from "@/actions/bulk";
 import MultiCheckPicker from "@/components/MultiCheckPicker";
 import ActionForm from "@/components/ActionForm";
 import ActionButton from "@/components/ActionButton";
+import BatchEmailLauncher from "@/components/BatchEmailLauncher";
+import { getDefaultEmailTemplate } from "@/actions/email";
 
 function isoDate(d: Date) {
   return d.toISOString().slice(0, 10);
@@ -28,10 +30,13 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
   });
   if (!batch) notFound();
 
-  const courses = await prisma.course.findMany({
-    where: { status: "active" },
-    orderBy: { name: "asc" },
-  });
+  const [courses, emailTemplate] = await Promise.all([
+    prisma.course.findMany({
+      where: { status: "active" },
+      orderBy: { name: "asc" },
+    }),
+    getDefaultEmailTemplate(),
+  ]);
   const checkedCourses = batch.batchCourses.map((bc) => bc.courseId);
   const students = batch.studentBatches.map((sb) => sb.student);
 
@@ -46,6 +51,14 @@ export default async function BatchEdit({ params }: { params: Promise<{ id: stri
         Students in this batch can watch every course assigned below. Assign
         courses progressively as classes happen.
       </p>
+      <div className="batch-quick-actions">
+        <BatchEmailLauncher
+          batchId={batch.id}
+          batchLabel={batch.batchCode}
+          defaultSubject={emailTemplate.subject}
+          defaultBody={emailTemplate.body}
+        />
+      </div>
 
       <div className="add-student-panel" id="edit">
         <div className="form-card-header">

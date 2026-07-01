@@ -4,7 +4,7 @@ import { useActionState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/Toast";
 
-type ActionResult = { ok: boolean; error?: string };
+type ActionResult = { ok: boolean; error?: string; data?: unknown };
 
 type InternalState = ActionResult & { _t: number };
 
@@ -17,8 +17,10 @@ type Props = {
    * props to this client component.
    */
   action: (formData: FormData) => Promise<ActionResult>;
-  /** Shown as a success toast when the action resolves `{ ok: true }`. */
-  successMessage: string;
+  /** Success toast when the action resolves `{ ok: true }`. Either a fixed
+   *  string, or a function of the action's returned `data` for a dynamic
+   *  message (e.g. "Added 12 · emailed 12"). */
+  successMessage: string | ((data: unknown) => string);
   /** Optional client-side navigation after success (e.g. delete → list). The
    *  toast survives the navigation because ToastProvider lives in the layout. */
   redirectTo?: string;
@@ -61,7 +63,9 @@ export default function ActionForm({
     if (!state._t || state._t === seen.current) return;
     seen.current = state._t;
     if (state.ok) {
-      toast.success(successMessage);
+      toast.success(
+        typeof successMessage === "function" ? successMessage(state.data) : successMessage,
+      );
       if (resetOnSuccess) formRef.current?.reset();
       if (redirectTo) {
         router.push(redirectTo);
