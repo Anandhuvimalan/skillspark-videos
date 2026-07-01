@@ -25,11 +25,8 @@ export type SendSummary = {
 
 /** Max recipients handled in one call — guards against runaway sends. */
 export const MAX_RECIPIENTS_PER_SEND = 500;
-/** How many messages to send concurrently (Zoho tolerates a few at a time). */
+/** How many messages to send concurrently (matches the transporter pool). */
 const CONCURRENCY = 3;
-/** Pause after each message per worker, smoothing the rate to stay well under
- *  provider limits and avoid tripping spam heuristics on bursts. */
-const THROTTLE_MS = 150;
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -61,6 +58,16 @@ function transporter(): Transporter {
       user: process.env.EMAIL_SMTP_USER,
       pass: process.env.EMAIL_SMTP_PASS,
     },
+    // Reuse a small pool of connections instead of a fresh TLS handshake per
+    // message — far faster for multi-recipient sends.
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    // Hard timeouts so a slow/blocked network (e.g. a host that firewalls the
+    // SMTP port) fails fast and is reported, instead of hanging the request.
+    connectionTimeout: 15_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 25_000,
   });
   return cached;
 }
@@ -74,8 +81,6 @@ function fromHeader(): string {
 function replyToAddress(): string {
   return process.env.EMAIL_REPLY_TO?.trim() || process.env.EMAIL_SMTP_USER || "";
 }
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Fill {{placeholders}} for one recipient. Unknown tokens are left as-is. */
 export function renderTemplate(tpl: string, r: EmailRecipient): string {
@@ -157,10 +162,11 @@ export async function sendPersonalizedEmails(
   const unsubscribe = `<mailto:${replyTo}?subject=unsubscribe>`;
   const tx = transporter();
 
-  // Small concurrency pool + a per-message throttle. Sending one personalized
-  // copy each (not a big BCC), with From aligned to the authenticating domain,
-  // a Reply-To and a List-Unsubscribe header, is what keeps bulk mail out of
-  // spam — combined with domain-level SPF/DKIM/DMARC set in Zoho DNS.
+  // Small concurrency pool over pooled connections. One personalized copy each
+  // (not a big BCC), From aligned to the authenticating domain, plus Reply-To
+  // and List-Unsubscribe headers — keeps bulk mail out of spam alongside
+  // domain-level SPF/DKIM/DMARC. Connection reuse + timeouts (see transporter)
+  // keep it fast and prevent the request hanging on a slow/blocked network.
   let cursor = 0;
   async function worker() {
     while (cursor < valid.length) {
@@ -181,7 +187,6 @@ export async function sendPersonalizedEmails(
       } catch (e: any) {
         summary.failed.push({ email: r.email, reason: e?.message ? String(e.message).slice(0, 200) : "send failed" });
       }
-      await sleep(THROTTLE_MS);
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, valid.length) }, worker));

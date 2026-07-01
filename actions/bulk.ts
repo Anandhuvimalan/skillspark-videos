@@ -207,26 +207,30 @@ export async function bulkAddStudentsToBatch(
 
     // Optional: email the just-added students their "how to access" note. The
     // roster rows already carry name/email/studentCode, so no extra query.
+    // Fire-and-forget — SMTP delivery must NOT block the "add students"
+    // response (a slow mail server would otherwise hang the whole request).
+    // The audit log is written when delivery finishes, in the background.
     let emailed = 0;
     const wantEmail = String(formData.get("sendEmail") ?? "") === "on";
     if (wantEmail && rows.length && isEmailConfigured()) {
       const subject = String(formData.get("emailSubject") ?? "").trim();
       const body = String(formData.get("emailBody") ?? "").trim();
       if (subject && body) {
-        const summary = await sendPersonalizedEmails(
-          rows.map((r) => ({ email: r.email, name: r.name, studentCode: r.studentCode })),
-          subject,
-          body,
-        );
-        emailed = summary.sent;
-        await createAuditLog({
-          actorId: admin.id, actorEmail: admin.email, actorType: "admin",
-          action: "EMAIL_SENT", entityType: "Batch", entityId: batch.id,
-          newValue: {
-            source: "bulk-add-to-batch", subject, recipients: rows.length,
-            sent: summary.sent, failed: summary.failed.length, skipped: summary.skipped.length,
-          },
-        });
+        const recipients = rows.map((r) => ({ email: r.email, name: r.name, studentCode: r.studentCode }));
+        emailed = recipients.length; // queued for delivery
+        const actor = { id: admin.id, email: admin.email };
+        void sendPersonalizedEmails(recipients, subject, body)
+          .then((summary) =>
+            createAuditLog({
+              actorId: actor.id, actorEmail: actor.email, actorType: "admin",
+              action: "EMAIL_SENT", entityType: "Batch", entityId: batch.id,
+              newValue: {
+                source: "bulk-add-to-batch", subject, recipients: recipients.length,
+                sent: summary.sent, failed: summary.failed.length, skipped: summary.skipped.length,
+              },
+            }),
+          )
+          .catch(() => {});
       }
     }
 
